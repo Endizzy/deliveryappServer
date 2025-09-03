@@ -11,7 +11,7 @@ const app = express();
 // --- CORS ---
 app.use(
     cors({
-        origin: ["http://localhost:5173"], // разрешаем фронт
+        origin: ["https://client-production-98ef.up.railway.app/"], // разрешаем фронт
         methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         credentials: true,
     })
@@ -138,5 +138,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, () => {
-    console.log(`HTTP+WS server on http://localhost:${PORT}`);
+    console.log(`HTTP+WS server on https://client-production-98ef.up.railway.app/:${PORT}`);
 });
