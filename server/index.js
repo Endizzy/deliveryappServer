@@ -5,30 +5,24 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 
 const PORT = process.env.PORT || 4000;
-
 const app = express();
 
 // --- CORS ---
-app.use(
-    cors({
-        origin: ["https://client-production-98ef.up.railway.app/"], // разрешаем фронт
-        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        credentials: true,
-    })
-);
+app.use(cors({
+    origin: "*", // разрешаем все для теста (можно сузить до домена фронта)
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    credentials: true,
+}));
 app.options("*", cors()); // preflight
 
 app.use(express.json());
+
+// Health check
 app.get('/health', (_, res) => res.send('OK'));
 
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
-
-// in-memory состояние: { [courierId]: { lat,lng,speedKmh,timestamp,orderId,status } }
-const state = new Map();
-
-// in-memory заказы: { id: { id, title, status, courierId } }
-const orders = new Map();
+// === HTTP-интерфейс для фоновой отправки локаций ===
+const state = new Map(); // { [courierId]: { lat,lng,speedKmh,timestamp,orderId,status } }
+const orders = new Map(); // { id: { id, title, status, courierId } }
 let nextOrderId = 1;
 
 function parseJsonSafe(str) {
@@ -42,7 +36,6 @@ function broadcastToAdmins(payload) {
     });
 }
 
-// === HTTP-интерфейс для фоновой отправки локаций ===
 app.post('/api/location', (req, res) => {
     const { courierId, lat, lng, speedKmh, orderId, status, timestamp } = req.body || {};
     if (typeof courierId === 'undefined' || typeof lat !== 'number' || typeof lng !== 'number') {
@@ -62,11 +55,8 @@ app.post('/api/location', (req, res) => {
     res.json({ ok: true });
 });
 
-// === CRUD для заказов ===
-app.get('/api/orders', (_, res) => {
-    res.json(Array.from(orders.values()));
-});
-
+// CRUD заказов
+app.get('/api/orders', (_, res) => res.json(Array.from(orders.values())));
 app.post('/api/orders', (req, res) => {
     const { title } = req.body;
     if (!title) return res.status(400).json({ error: 'title required' });
@@ -75,7 +65,6 @@ app.post('/api/orders', (req, res) => {
     res.json(order);
     broadcastToAdmins({ type: 'order_created', order });
 });
-
 app.put('/api/orders/:id', (req, res) => {
     const id = Number(req.params.id);
     if (!orders.has(id)) return res.status(404).json({ error: 'not found' });
@@ -85,7 +74,6 @@ app.put('/api/orders/:id', (req, res) => {
     res.json(updated);
     broadcastToAdmins({ type: 'order_updated', order: updated });
 });
-
 app.delete('/api/orders/:id', (req, res) => {
     const id = Number(req.params.id);
     if (!orders.has(id)) return res.status(404).json({ error: 'not found' });
@@ -95,6 +83,9 @@ app.delete('/api/orders/:id', (req, res) => {
 });
 
 // === WS ===
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+
 wss.on('connection', (ws) => {
     ws.clientType = 'unknown';
 
@@ -104,18 +95,17 @@ wss.on('connection', (ws) => {
 
         if (data.type === 'hello') {
             ws.clientType = data.role === 'admin' ? 'admin' : 'courier';
+
             if (ws.clientType === 'admin') {
                 const snapshot = Array.from(state.entries())
                     .map(([courierId, v]) => ({ courierId, ...v }));
                 ws.send(JSON.stringify({ type: 'snapshot', items: snapshot }));
-
-                // Отправим snapshot заказов
                 ws.send(JSON.stringify({ type: 'orders_snapshot', items: Array.from(orders.values()) }));
             }
             return;
         }
 
-        // старый путь от курьера по WS (оставим как есть)
+        // Курьер отправляет локацию по WS
         if (data.type === 'location' && ws.clientType !== 'admin') {
             const { courierId, lat, lng, speedKmh, orderId, status, timestamp } = data;
             if (typeof courierId === 'undefined' || typeof lat !== 'number' || typeof lng !== 'number') return;
@@ -132,11 +122,10 @@ wss.on('connection', (ws) => {
 
             state.set(String(courierId), { ...payload, type: undefined });
             broadcastToAdmins(payload);
-            return;
         }
     });
 });
 
 server.listen(PORT, () => {
-    console.log(`HTTP+WS server on https://client-production-98ef.up.railway.app/:${PORT}`);
+    console.log(`HTTP + WS server running on port ${PORT}`);
 });
