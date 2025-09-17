@@ -1,0 +1,81 @@
+// server/auth.js
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import pool from "./db.js";
+
+const JWT_SECRET = process.env.JWT_SECRET || "super_secret_key";
+
+// --- Регистрация ---
+export async function register(req, res) {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({ error: "Email и пароль обязательны" });
+        }
+
+        // Проверка на уникальность
+        const [rows] = await pool.query("SELECT id FROM users WHERE email = ?", [email]);
+        if (rows.length > 0) {
+            return res.status(400).json({ error: "Пользователь уже существует" });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 10);
+
+        // Создаём пользователя с дефолтной ролью client
+        const [result] = await pool.query(
+            "INSERT INTO users (email, password_hash, role, created_at, updated_at) VALUES (?, ?, 'client', NOW(), NOW())",
+            [email, passwordHash]
+        );
+
+        return res.json({ ok: true, message: "Регистрация успешна", userId: result.insertId });
+    } catch (err) {
+        console.error("Ошибка регистрации:", err);
+        res.status(500).json({ error: "Ошибка сервера" });
+    }
+}
+
+// --- Логин ---
+export async function login(req, res) {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) {
+            return res.status(400).json({ error: "Email и пароль обязательны" });
+        }
+
+        const [rows] = await pool.query("SELECT * FROM users WHERE email = ?", [email]);
+        if (rows.length === 0) {
+            return res.status(401).json({ error: "Неверный email или пароль" });
+        }
+
+        const user = rows[0];
+        const valid = await bcrypt.compare(password, user.password_hash);
+        if (!valid) return res.status(401).json({ error: "Неверный email или пароль" });
+
+        // Создаём токен
+        const token = jwt.sign(
+            { userId: user.id, role: user.role },
+            JWT_SECRET,
+            { expiresIn: "15m" }
+        );
+
+        return res.json({ ok: true, token });
+    } catch (err) {
+        console.error("Ошибка логина:", err);
+        res.status(500).json({ error: "Ошибка сервера" });
+    }
+}
+
+// --- Middleware для проверки токена ---
+export function authMiddleware(req, res, next) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: "Нет токена" });
+
+    const token = authHeader.split(" ")[1];
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        req.user = decoded; // { userId, role }
+        next();
+    } catch (err) {
+        return res.status(401).json({ error: "Невалидный или просроченный токен" });
+    }
+}
