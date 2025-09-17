@@ -8,23 +8,29 @@ const JWT_SECRET = process.env.JWT_SECRET || "super_secret_key";
 // --- Регистрация ---
 export async function register(req, res) {
     try {
-        const { email, password } = req.body;
-        if (!email || !password) {
-            return res.status(400).json({ error: "Email и пароль обязательны" });
+        const { firstName, lastName, email, phone, password } = req.body;
+
+        if (!firstName || !lastName || !email || !phone || !password) {
+            return res.status(400).json({ error: "Все поля обязательны" });
         }
 
-        // Проверка на уникальность
-        const [rows] = await pool.query("SELECT id FROM users WHERE email = ?", [email]);
+        // Проверка на уникальность email и телефона
+        const [rows] = await pool.query(
+            "SELECT id FROM users WHERE email = ? OR phone = ?",
+            [email, phone]
+        );
         if (rows.length > 0) {
-            return res.status(400).json({ error: "Пользователь уже существует" });
+            return res.status(400).json({ error: "Email или телефон уже используется" });
         }
 
         const passwordHash = await bcrypt.hash(password, 10);
 
         // Создаём пользователя с дефолтной ролью client
         const [result] = await pool.query(
-            "INSERT INTO users (email, password_hash, role, created_at, updated_at) VALUES (?, ?, 'client', NOW(), NOW())",
-            [email, passwordHash]
+            `INSERT INTO users 
+                (first_name, last_name, email, phone, password_hash, role, created_at, updated_at) 
+             VALUES (?, ?, ?, ?, ?, 'client', NOW(), NOW())`,
+            [firstName, lastName, email, phone, passwordHash]
         );
 
         return res.json({ ok: true, message: "Регистрация успешна", userId: result.insertId });
