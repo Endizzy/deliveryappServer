@@ -85,3 +85,16 @@ export function authMiddleware(req, res, next) {
         return res.status(401).json({ error: "Невалидный или просроченный токен" });
     }
 }
+
+export function roleMiddleware(roles = []) {
+    return (req, res, next) => {
+        if (!req.user) {
+            return res.status(401).json({ error: "Не авторизован" });
+        }
+        if (!roles.includes(req.user.role)) {
+            return res.status(403).json({ error: "Доступ запрещён" });
+        }
+        next();
+    };
+}
+
