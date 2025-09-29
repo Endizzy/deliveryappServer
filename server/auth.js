@@ -28,8 +28,8 @@ export async function register(req, res) {
         // Создаём пользователя с дефолтной ролью client
         const [result] = await pool.query(
             `INSERT INTO users 
-                (first_name, last_name, email, phone, password_hash, role, created_at, updated_at) 
-             VALUES (?, ?, ?, ?, ?, 'client', NOW(), NOW())`,
+                (first_name, last_name, email, phone, password, role, company_id, created_at, updated_at) 
+             VALUES (?, ?, ?, ?, ?, 'client', DEFAULT, NOW(), NOW())`,
             [firstName, lastName, email, phone, passwordHash]
         );
 
@@ -43,23 +43,33 @@ export async function register(req, res) {
 // --- Логин ---
 export async function login(req, res) {
     try {
-        const { email, password } = req.body;
+        const { email, password } = req.body; // здесь может прийти email ИЛИ телефон
         if (!email || !password) {
             return res.status(400).json({ error: "Email и пароль обязательны" });
         }
 
-        const [rows] = await pool.query("SELECT * FROM users WHERE email = ?", [email]);
+        const identifier = String(email).trim();
+
+        const [rows] = await pool.query(
+            `SELECT user_id, password, role
+         FROM users
+        WHERE email = ? OR phone = ?
+        LIMIT 1`,
+            [identifier, identifier]
+        );
+
         if (rows.length === 0) {
             return res.status(401).json({ error: "Неверный email или пароль" });
         }
 
         const user = rows[0];
-        const valid = await bcrypt.compare(password, user.password_hash);
-        if (!valid) return res.status(401).json({ error: "Неверный email или пароль" });
+        const valid = await bcrypt.compare(password, user.password);
+        if (!valid) {
+            return res.status(401).json({ error: "Неверный email или пароль" });
+        }
 
-        // Создаём токен
         const token = jwt.sign(
-            { userId: user.id, role: user.role },
+            { userId: user.user_id, role: user.role },
             JWT_SECRET,
             { expiresIn: "15m" }
         );
@@ -70,6 +80,7 @@ export async function login(req, res) {
         res.status(500).json({ error: "Ошибка сервера" });
     }
 }
+
 
 // --- Middleware для проверки токена ---
 export function authMiddleware(req, res, next) {
