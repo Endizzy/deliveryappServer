@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
+import { getUser } from "./getUser.js";
 import { WebSocketServer } from 'ws';
 import { register, login, authMiddleware } from './auth.js';
 
@@ -21,12 +22,16 @@ app.use(express.json());
 // Health check
 app.get('/health', (_, res) => res.send('OK'));
 
-// === 🔐 РОУТЫ АВТОРИЗАЦИИ ===
+// === РОУТЫ АВТОРИЗАЦИИ ===
 app.post("/api/auth/register", register);
 app.post("/api/auth/login", login);
 app.get("/api/profile", authMiddleware, (req, res) => {
     res.json({ ok: true, user: req.user });
 });
+
+// === ПОЛЬЗОВАТЕЛИ ===
+
+app.get("/api/user/me", authMiddleware, getUser);
 
 // === HTTP-интерфейс для фоновой отправки локаций ===
 const state = new Map(); // { [courierId]: { lat,lng,speedKmh,timestamp,orderId,status } }
