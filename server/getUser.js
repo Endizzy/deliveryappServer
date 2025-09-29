@@ -27,29 +27,42 @@ export async function getUser(req, res) {
             createdAt: u.created_at,
         };
 
-        // 2) Компания (только если company_id не NULL)
+        // 2) Компания (только если есть company_id)
         let company = null;
         if (u.company_id != null) {
             const [cRows] = await pool.query(
                 `SELECT company_id,
-                company_owner_user_id,
-                company_owner_email,
-                company_name,
-                company_logo,
-                company_phone,
-                company_menu,
-                created_at
-           FROM companies
-          WHERE company_id = ?
-          LIMIT 1`,
+                        company_owner_user_id,
+                        company_owner_email,
+                        company_name,
+                        company_logo,
+                        company_phone,
+                        company_menu,
+                        created_at
+                 FROM companies
+                 WHERE company_id = ?
+                     LIMIT 1`,
                 [u.company_id]
             );
+
             if (cRows.length) {
                 const c = cRows[0];
+
+                // Сформируем абсолютный URL, чтобы фронт не думал об origin/порте
+                const base = process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get("host")}`;
+                // в БД может лежать "BentoLogo.png" или "/companyLogo/BentoLogo.png"
+                let logoPath = c.company_logo || null;
+                if (logoPath) {
+                    if (!logoPath.startsWith("/")) {
+                        logoPath = `/companyLogo/${logoPath}`; // имя файла -> web-путь
+                    }
+                }
+                const logoUrl = logoPath ? `${base}${logoPath}` : null;
+
                 company = {
                     id: c.company_id,
                     name: c.company_name,
-                    logo: c.company_logo,
+                    logoUrl,
                     phone: c.company_phone,
                     ownerUserId: c.company_owner_user_id,
                     ownerEmail: c.company_owner_email,

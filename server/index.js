@@ -5,11 +5,24 @@ import http from 'http';
 import { getUser } from "./getUser.js";
 import { WebSocketServer } from 'ws';
 import { register, login, authMiddleware } from './auth.js';
+import path from "path";
+import { fileURLToPath } from "url";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 4000;
 const app = express();
 
 // --- CORS ---
+app.use(
+    "/companyLogo",
+    express.static(path.join(__dirname, "companyLogo"), {
+        setHeaders(res) {
+            res.set("Cache-Control", "public, max-age=31536000, immutable");
+        },
+    })
+);
+
 app.use(cors({
     origin: "*", // разрешаем все для теста (можно сузить до домена фронта)
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
