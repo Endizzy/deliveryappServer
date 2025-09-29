@@ -16,7 +16,7 @@ export async function register(req, res) {
 
         // Проверка на уникальность email и телефона
         const [rows] = await pool.query(
-            "SELECT id FROM users WHERE email = ? OR phone = ?",
+            "SELECT user_id FROM users WHERE email = ? OR phone = ? LIMIT 1",
             [email, phone]
         );
         if (rows.length > 0) {
