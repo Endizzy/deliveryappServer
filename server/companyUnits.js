@@ -1,3 +1,4 @@
+// companyUnits.js
 import pool from "./db.js";
 import bcrypt from "bcrypt";
 const SALT_ROUNDS = 10;
@@ -15,20 +16,29 @@ const mapUnit = (r) => ({
     updatedAt: r.updated_at,
 });
 
-// Грубая авторизация: любой, у кого есть companyId и не courier — может управлять
+// ---- helpers ----
+function normalizeUser(u = {}) {
+    const companyId =
+        u.companyId ?? u.company_id ?? u.company ?? u.companyID ?? null;
+    const role = (u.role || u.user_role || "").toLowerCase();
+    return { ...u, companyId: companyId ? Number(companyId) : null, role };
+}
+
 function ensureCanManage(req, res) {
-    const u = req.user;
-    if (!u || !u.companyId) {
+    req.user = normalizeUser(req.user);
+    if (!req.user.companyId) {
         res.status(400).json({ ok: false, error: "У пользователя нет companyId" });
         return false;
     }
-    if (String(u.role).toLowerCase() === "courier") {
+    // запрещаем только курьеров
+    if (req.user.role === "courier") {
         res.status(403).json({ ok: false, error: "Недостаточно прав" });
         return false;
     }
     return true;
 }
 
+// ---- handlers ----
 export async function listUnits(req, res) {
     try {
         if (!ensureCanManage(req, res)) return;
@@ -42,8 +52,9 @@ export async function listUnits(req, res) {
         if (q) {
             sql =
                 "SELECT * FROM company_units " +
-                "WHERE company_id = ? AND (LOWER(unit_nickname) LIKE ? OR LOWER(unit_phone) LIKE ? OR LOWER(unit_role) LIKE ?) " +
-                "ORDER BY unit_id DESC";
+                "WHERE company_id = ? AND (" +
+                "LOWER(unit_nickname) LIKE ? OR LOWER(unit_phone) LIKE ? OR LOWER(unit_role) LIKE ?" +
+                ") ORDER BY unit_id DESC";
             params = [companyId, `%${q}%`, `%${q}%`, `%${q}%`];
         }
 
@@ -74,9 +85,8 @@ export async function createUnit(req, res) {
                 .status(400)
                 .json({ ok: false, error: "nickname, phone и password обязательны" });
         }
-        if (!["courier", "admin"].includes(String(role))) {
+        if (!["courier", "admin"].includes(String(role)))
             return res.status(400).json({ ok: false, error: "Некорректная роль" });
-        }
 
         const hash = await bcrypt.hash(String(password), SALT_ROUNDS);
 
@@ -93,7 +103,6 @@ export async function createUnit(req, res) {
         );
         res.status(201).json({ ok: true, item: mapUnit(rows[0]) });
     } catch (e) {
-        // ловим уникальные ограничения
         if (e && e.code === "ER_DUP_ENTRY") {
             return res
                 .status(409)
@@ -110,62 +119,39 @@ export async function updateUnit(req, res) {
         const { companyId } = req.user;
         const id = Number(req.params.id);
 
-        const {
-            nickname,
-            phone,
-            email,
-            role,
-            active,
-            password,
-        } = req.body || {};
+        const { nickname, phone, email, role, active, password } = req.body || {};
 
         const fields = [];
         const params = [];
 
-        if (nickname !== undefined) {
-            fields.push("unit_nickname = ?");
-            params.push(nickname);
-        }
-        if (phone !== undefined) {
-            fields.push("unit_phone = ?");
-            params.push(phone);
-        }
-        if (email !== undefined) {
-            fields.push("unit_email = ?");
-            params.push(email || null);
-        }
+        if (nickname !== undefined) { fields.push("unit_nickname=?"); params.push(nickname); }
+        if (phone !== undefined)    { fields.push("unit_phone=?");    params.push(phone); }
+        if (email !== undefined)    { fields.push("unit_email=?");    params.push(email || null); }
         if (role !== undefined) {
             if (!["courier", "admin"].includes(String(role)))
                 return res.status(400).json({ ok: false, error: "Некорректная роль" });
-            fields.push("unit_role = ?");
-            params.push(role);
+            fields.push("unit_role=?"); params.push(role);
         }
-        if (active !== undefined) {
-            fields.push("is_active = ?");
-            params.push(active ? 1 : 0);
-        }
+        if (active !== undefined)   { fields.push("is_active=?");     params.push(active ? 1 : 0); }
         if (password) {
             const hash = await bcrypt.hash(String(password), SALT_ROUNDS);
-            fields.push("unit_password_hash = ?");
+            fields.push("unit_password_hash=?");
             params.push(hash);
         }
 
-        if (!fields.length) {
-            return res.json({ ok: true, item: null });
-        }
+        if (!fields.length) return res.json({ ok: true, item: null });
 
-        const sql = `UPDATE company_units SET ${fields.join(
-            ", "
-        )}, updated_at = CURRENT_TIMESTAMP WHERE unit_id = ? AND company_id = ?`;
+        const sql =
+            `UPDATE company_units SET ${fields.join(", ")}, updated_at=CURRENT_TIMESTAMP
+       WHERE unit_id=? AND company_id=?`;
         params.push(id, companyId);
 
         const [result] = await pool.query(sql, params);
-        if (result.affectedRows === 0) {
+        if (result.affectedRows === 0)
             return res.status(404).json({ ok: false, error: "Не найдено" });
-        }
 
         const [rows] = await pool.query(
-            "SELECT * FROM company_units WHERE unit_id = ? AND company_id = ?",
+            "SELECT * FROM company_units WHERE unit_id=? AND company_id=?",
             [id, companyId]
         );
         res.json({ ok: true, item: rows.length ? mapUnit(rows[0]) : null });
@@ -187,12 +173,12 @@ export async function deleteUnit(req, res) {
         const id = Number(req.params.id);
 
         const [result] = await pool.query(
-            "DELETE FROM company_units WHERE unit_id = ? AND company_id = ?",
+            "DELETE FROM company_units WHERE unit_id=? AND company_id=?",
             [id, companyId]
         );
-        if (result.affectedRows === 0) {
+        if (result.affectedRows === 0)
             return res.status(404).json({ ok: false, error: "Не найдено" });
-        }
+
         res.json({ ok: true });
     } catch (e) {
         console.error("deleteUnit error:", e);
