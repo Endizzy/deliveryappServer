@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import { getUser } from "./getUser.js";
+import menuApi from "./menuApi.js";
 import { WebSocketServer } from 'ws';
 import { register, login, authMiddleware } from './auth.js';
 import path from "path";
@@ -41,6 +42,9 @@ app.post("/api/auth/login", login);
 app.get("/api/profile", authMiddleware, (req, res) => {
     res.json({ ok: true, user: req.user });
 });
+
+// === МЕНЮ ===
+app.use("/api/menu", authMiddleware, menuApi);
 
 // === ПОЛЬЗОВАТЕЛИ ===
 
