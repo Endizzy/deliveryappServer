@@ -1,6 +1,6 @@
 // server/companyUnits.js
 import pool from "./db.js";
-import bcrypt from "bcryptjs";
+import bcrypt from "bcrypt";
 
 const SALT_ROUNDS = 10;
 
