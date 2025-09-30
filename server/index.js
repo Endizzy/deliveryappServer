@@ -8,6 +8,12 @@ import { WebSocketServer } from 'ws';
 import { register, login, authMiddleware } from './auth.js';
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+    listUnits,
+    createUnit,
+    updateUnit,
+    deleteUnit,
+} from "./companyUnits.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -49,6 +55,12 @@ app.use("/api/menu", authMiddleware, menuApi);
 // === ПОЛЬЗОВАТЕЛИ ===
 
 app.get("/api/user/me", authMiddleware, getUser);
+
+// === STAFF (company_units) ===
+app.get("/api/staff", authMiddleware, listUnits);
+app.post("/api/staff", authMiddleware, createUnit);
+app.put("/api/staff/:id", authMiddleware, updateUnit);
+app.delete("/api/staff/:id", authMiddleware, deleteUnit);
 
 // === HTTP-интерфейс для фоновой отправки локаций ===
 const state = new Map(); // { [courierId]: { lat,lng,speedKmh,timestamp,orderId,status } }

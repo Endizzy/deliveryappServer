@@ -1,6 +1,5 @@
-// companyUnits.js
 import pool from "./db.js";
-import bcrypt from "bcryptjs"; // если у тебя стоит "bcrypt" — замени import
+import bcrypt from "bcrypt";
 const SALT_ROUNDS = 10;
 
 const mapUnit = (r) => ({
@@ -40,7 +39,6 @@ export async function listUnits(req, res) {
             "SELECT * FROM company_units WHERE company_id = ? ORDER BY unit_id DESC";
         let params = [companyId];
 
-        // лёгкий поиск по нику/телефону/роли
         if (q) {
             sql =
                 "SELECT * FROM company_units " +
@@ -118,7 +116,7 @@ export async function updateUnit(req, res) {
             email,
             role,
             active,
-            password, // опционально
+            password,
         } = req.body || {};
 
         const fields = [];
