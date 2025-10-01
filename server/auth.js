@@ -51,7 +51,7 @@ export async function login(req, res) {
         const identifier = String(email).trim();
 
         const [rows] = await pool.query(
-            `SELECT user_id, password, role
+            `SELECT user_id, password, role, company_id
          FROM users
         WHERE email = ? OR phone = ?
         LIMIT 1`,
@@ -69,7 +69,7 @@ export async function login(req, res) {
         }
 
         const token = jwt.sign(
-            { userId: user.user_id, role: user.role },
+            { userId: user.user_id, role: user.role, companyId: user.company_id },
             JWT_SECRET,
             { expiresIn: "30m" }
         );
