@@ -1,11 +1,9 @@
 // server/orderSupport.js
 import pool from "./db.js";
 
-// Берём companyId из JWT, а если его вдруг нет (старые токены) — пробуем достать из БД
 async function resolveCompanyContext(req, res) {
     const u = req.user || {};
     let companyId = u.companyId ?? u.company_id ?? null;
-
     if (!companyId) {
         const userId = u.userId ?? u.id ?? null;
         if (!userId) {
@@ -24,7 +22,6 @@ async function resolveCompanyContext(req, res) {
     return { companyId: Number(companyId) };
 }
 
-// GET /api/order-support/couriers
 export async function getCouriers(req, res) {
     try {
         const ctx = await resolveCompanyContext(req, res);
@@ -33,9 +30,9 @@ export async function getCouriers(req, res) {
 
         const [rows] = await pool.query(
             `SELECT unit_id, unit_nickname
-         FROM company_units
-        WHERE company_id=? AND unit_role='courier' AND is_active=1
-        ORDER BY unit_nickname ASC`,
+             FROM company_units
+             WHERE company_id=? AND unit_role='courier' AND is_active=1
+             ORDER BY unit_nickname ASC`,
             [companyId]
         );
 
@@ -46,7 +43,6 @@ export async function getCouriers(req, res) {
     }
 }
 
-// NEW: GET /api/order-support/pickup-points  (админы как “точки комплектации”)
 export async function getPickupPoints(req, res) {
     try {
         const ctx = await resolveCompanyContext(req, res);
@@ -68,12 +64,34 @@ export async function getPickupPoints(req, res) {
     }
 }
 
-// GET /api/order-support/menu?q=...&limit=8
+// GET /api/order-support/menu?all=1  (всё активное меню компании)
+// GET /api/order-support/menu?q=...&limit=8  (поиск на сервере, оставляем как было)
 export async function searchMenuItems(req, res) {
     try {
         const ctx = await resolveCompanyContext(req, res);
         if (!ctx) return;
         const { companyId } = ctx;
+
+        const wantAll = String(req.query.all || "") === "1";
+        if (wantAll) {
+            const [rows] = await pool.query(
+                `SELECT item_id, item_name, item_category, item_price, item_discount_percent
+           FROM menu
+          WHERE company_id=? AND is_active=1
+          ORDER BY item_name ASC`,
+                [companyId]
+            );
+            return res.json({
+                ok: true,
+                items: rows.map(r => ({
+                    id: r.item_id,
+                    name: r.item_name,
+                    category: r.item_category,
+                    price: Number(r.item_price),
+                    discount: Number(r.item_discount_percent) || 0,
+                })),
+            });
+        }
 
         const q = (req.query.q || "").trim().toLowerCase();
         const limit = Math.min(Number(req.query.limit || 8), 50);
@@ -81,8 +99,7 @@ export async function searchMenuItems(req, res) {
         let sql = `
       SELECT item_id, item_name, item_category, item_price, item_discount_percent
         FROM menu
-       WHERE company_id=? AND is_active=1
-    `;
+       WHERE company_id=? AND is_active=1`;
         const params = [companyId];
 
         if (q) {
