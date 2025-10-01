@@ -9,6 +9,7 @@ import { register, login, authMiddleware } from './auth.js';
 import path from "path";
 import { fileURLToPath } from "url";
 import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js";
+import { getCouriers, searchMenuItems } from "./orderSupport.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,6 +44,10 @@ app.post("/api/auth/login", login);
 app.get("/api/profile", authMiddleware, (req, res) => {
     res.json({ ok: true, user: req.user });
 });
+
+// Создание заказа
+app.get("/api/order-support/couriers", authMiddleware, getCouriers);
+app.get("/api/order-support/menu",     authMiddleware, searchMenuItems);
 
 // === МЕНЮ ===
 app.use("/api/menu", authMiddleware, menuApi);
