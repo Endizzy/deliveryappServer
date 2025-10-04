@@ -1,10 +1,8 @@
-// server/currentOrder.js
+// server/currentOrders.js
 import express from "express";
 import pool from "./db.js";
 
-/**
- * Хелпер: определяем companyId из JWT (req.user), как в других модулях.
- */
+/** --- helpers --- */
 async function resolveCompanyContext(req, res) {
     const u = req.user || {};
     let companyId = u.companyId ?? u.company_id ?? null;
@@ -29,9 +27,6 @@ async function resolveCompanyContext(req, res) {
     return { companyId: Number(companyId), user: req.user };
 }
 
-/**
- * Хелпер: нормализуем позиции и считаем суммы
- */
 function normalizeItemsAndAmounts(items) {
     const norm = (Array.isArray(items) ? items : []).map((it) => {
         const price = Number(it.price || 0);
@@ -51,7 +46,7 @@ function normalizeItemsAndAmounts(items) {
     });
 
     const subtotal = +norm.reduce((s, r) => s + r.price * r.quantity, 0).toFixed(2);
-    const total = +norm.reduce((s, r) => s + r.line_total, 0).toFixed(2);
+    const total    = +norm.reduce((s, r) => s + r.line_total, 0).toFixed(2);
     const discount = +(subtotal - total).toFixed(2);
 
     return {
@@ -62,9 +57,6 @@ function normalizeItemsAndAmounts(items) {
     };
 }
 
-/**
- * Хелпер: формируем DTO под панель
- */
 function rowToPanelDto(r) {
     const addr = [
         r.address_street,
@@ -73,20 +65,18 @@ function rowToPanelDto(r) {
         r.address_apartment && `кв.${r.address_apartment}`,
         r.address_floor && `эт.${r.address_floor}`,
         r.address_code && `код ${r.address_code}`,
-    ]
-        .filter(Boolean)
-        .join(", ");
+    ].filter(Boolean).join(", ");
 
     return {
         id: r.order_id,
         orderNo: r.order_no,
-        orderType: r.order_type, // active|preorder
-        status: r.status,        // new|ready|enroute|paused|cancelled
+        orderType: r.order_type,           // 'active' | 'preorder'
+        status: r.status,                  // 'new' | 'ready' | 'enroute' | 'paused' | 'cancelled'
         createdAt: r.created_at,
         updatedAt: r.updated_at,
         scheduledAt: r.scheduled_at,
         amountTotal: Number(r.amount_total),
-        paymentMethod: r.payment_method,
+        paymentMethod: r.payment_method,   // 'cash' | 'card' | 'wire'
         customer: r.customer_name,
         phone: r.customer_phone,
         address: addr,
@@ -98,9 +88,28 @@ function rowToPanelDto(r) {
     };
 }
 
-/**
- * Экспортируем ФАБРИКУ роутера, чтобы инжектнуть broadcastToAdmins из index.js
- */
+function safeParseItemsJSON(v) {
+    try {
+        if (v == null) return [];
+        if (typeof v === "string") return JSON.parse(v);
+        if (Buffer.isBuffer(v)) return JSON.parse(v.toString("utf8"));
+        if (typeof v === "object") return v; // mysql2 может уже отдать объект
+        return [];
+    } catch {
+        return [];
+    }
+}
+
+function coercePaymentMethod(val) {
+    // поддерживаем рус/англ вход и приводим к ENUM: 'cash','card','wire'
+    const s = String(val || "").trim().toLowerCase();
+    if (["cash", "наличные", "нал"].includes(s)) return "cash";
+    if (["card", "карта", "банковская карта"].includes(s)) return "card";
+    if (["wire", "перечислением", "безнал", "безналичный"].includes(s)) return "wire";
+    return "cash"; // дефолт чтобы не уронить INSERT/UPDATE
+}
+
+/** --- router factory (инжектим broadcastToAdmins из index.js) --- */
 export function currentOrdersRouter({ broadcastToAdmins }) {
     const router = express.Router();
 
@@ -162,15 +171,16 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const r = rows[0];
             const dto = rowToPanelDto(r);
-            dto.items = JSON.parse(r.items_json);
+            dto.items = safeParseItemsJSON(r.items_json);
             dto.notes = r.notes;
-            // раздельные поля адреса (если надо на форме редактирования)
-            dto.addressStreet = r.address_street;
-            dto.addressHouse = r.address_house;
-            dto.addressBuilding = r.address_building;
+
+            // раздельные поля адреса (для формы)
+            dto.addressStreet    = r.address_street;
+            dto.addressHouse     = r.address_house;
+            dto.addressBuilding  = r.address_building;
             dto.addressApartment = r.address_apartment;
-            dto.addressFloor = r.address_floor;
-            dto.addressCode = r.address_code;
+            dto.addressFloor     = r.address_floor;
+            dto.addressCode      = r.address_code;
 
             res.json({ ok: true, item: dto });
         } catch (e) {
@@ -200,6 +210,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 return res.status(400).json({ ok: false, error: "Способ оплаты обязателен" });
 
             const orderNo = b.orderNo || `CO-${Date.now().toString().slice(-8)}`;
+            const payment_method = coercePaymentMethod(b.payment);
 
             const [result] = await pool.query(
                 `INSERT INTO current_orders
@@ -227,7 +238,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     b.courierId || null,
                     b.pickupId || null,
                     (user && user.unitId) || null,
-                    b.payment,
+                    payment_method,
                     b.customer,
                     b.phone,
                     b.street || null,
@@ -259,7 +270,6 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const item = rowToPanelDto(rows[0]);
             res.json({ ok: true, item });
 
-            // realtime всем админам (сервер решает, кому разослать)
             if (typeof broadcastToAdmins === "function") {
                 broadcastToAdmins({ type: "order_created", companyId, order: item });
             }
@@ -285,6 +295,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 amount_total,
             } = normalizeItemsAndAmounts(b.selectedItems || []);
 
+            const payment_method = coercePaymentMethod(b.payment);
+
             await pool.query(
                 `UPDATE current_orders
             SET order_type=?, status=?, scheduled_at=?,
@@ -300,7 +312,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     b.scheduledAt || null,
                     b.courierId || null,
                     b.pickupId || null,
-                    b.payment,
+                    payment_method,
                     b.customer,
                     b.phone,
                     b.street || null,
