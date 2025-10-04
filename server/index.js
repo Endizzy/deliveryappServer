@@ -10,6 +10,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js";
 import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js";
+import currentOrdersRouter from "./currentOrder.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +45,10 @@ app.post("/api/auth/login", login);
 app.get("/api/profile", authMiddleware, (req, res) => {
     res.json({ ok: true, user: req.user });
 });
+
+// === CURRENT ORDERS ===
+app.use("/api/current-orders", authMiddleware, currentOrdersRouter({ broadcastToAdmins }));
+
 
 // Создание заказа
 app.get("/api/order-support/couriers",      authMiddleware, getCouriers);
