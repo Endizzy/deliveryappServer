@@ -2,7 +2,8 @@
 import express from "express";
 import pool from "./db.js";
 
-/** --- helpers --- */
+/** ================= helpers ================= */
+
 async function resolveCompanyContext(req, res) {
     const u = req.user || {};
     let companyId = u.companyId ?? u.company_id ?? null;
@@ -69,9 +70,11 @@ function rowToPanelDto(r) {
 
     return {
         id: r.order_id,
-        orderNo: r.order_no,
-        orderType: r.order_type,           // 'active' | 'preorder'
-        status: r.status,                  // 'new' | 'ready' | 'enroute' | 'paused' | 'cancelled'
+        orderNo: r.order_no,           // старый видимый номер (CO-...)
+        orderSeq: r.order_seq,         // НОВОЕ: «дневной» номер 1..N
+        orderSeqDate: r.order_seq_date,// НОВОЕ: дата операционного дня
+        orderType: r.order_type,       // 'active' | 'preorder'
+        status: r.status,              // 'new' | 'ready' | 'enroute' | 'paused' | 'cancelled'
         createdAt: r.created_at,
         updatedAt: r.updated_at,
         scheduledAt: r.scheduled_at,
@@ -93,7 +96,7 @@ function safeParseItemsJSON(v) {
         if (v == null) return [];
         if (typeof v === "string") return JSON.parse(v);
         if (Buffer.isBuffer(v)) return JSON.parse(v.toString("utf8"));
-        if (typeof v === "object") return v; // mysql2 может уже отдать объект
+        if (typeof v === "object") return v;
         return [];
     } catch {
         return [];
@@ -101,15 +104,67 @@ function safeParseItemsJSON(v) {
 }
 
 function coercePaymentMethod(val) {
-    // поддерживаем рус/англ вход и приводим к ENUM: 'cash','card','wire'
     const s = String(val || "").trim().toLowerCase();
     if (["cash", "наличные", "нал"].includes(s)) return "cash";
     if (["card", "карта", "банковская карта"].includes(s)) return "card";
     if (["wire", "перечислением", "безнал", "безналичный"].includes(s)) return "wire";
-    return "cash"; // дефолт чтобы не уронить INSERT/UPDATE
+    return "cash";
 }
 
-/** --- router factory (инжектим broadcastToAdmins из index.js) --- */
+/**
+ * Возвращает следующий дневной номер (1..N) для (company_id, seqDate).
+ * Супернадёжно и без гонок: UPDATE → (если 0 строк) INSERT → (если гонка) повторный UPDATE.
+ */
+async function getNextDailySeq(conn, companyId, seqDate /* 'YYYY-MM-DD' */) {
+    // 1) пробуем увеличить, если запись уже есть
+    const [r1] = await conn.query(
+        `UPDATE order_day_counters
+       SET last_seq = LAST_INSERT_ID(last_seq + 1)
+     WHERE company_id=? AND seq_date=?`,
+        [companyId, seqDate]
+    );
+    if (r1.affectedRows > 0) {
+        const [[row]] = await conn.query(`SELECT LAST_INSERT_ID() AS seq`);
+        return Number(row.seq);
+    }
+
+    // 2) нет записи — создаём её (номер = 1)
+    try {
+        await conn.query(
+            `INSERT INTO order_day_counters (company_id, seq_date, last_seq)
+       VALUES (?, ?, 1)`,
+            [companyId, seqDate]
+        );
+        return 1;
+    } catch (e) {
+        // 3) гонка вставки — повторяем шаг 1
+        if (e && e.code === "ER_DUP_ENTRY") {
+            const [r2] = await conn.query(
+                `UPDATE order_day_counters
+           SET last_seq = LAST_INSERT_ID(last_seq + 1)
+         WHERE company_id=? AND seq_date=?`,
+                [companyId, seqDate]
+            );
+            if (r2.affectedRows > 0) {
+                const [[row]] = await conn.query(`SELECT LAST_INSERT_ID() AS seq`);
+                return Number(row.seq);
+            }
+        }
+        throw e;
+    }
+}
+
+/** Формируем дату операционного дня (строка YYYY-MM-DD) */
+function deriveSeqDateFromBody(b) {
+    if (String(b?.orderType).toLowerCase() === "preorder" && b?.scheduledAt) {
+        const d = new Date(b.scheduledAt);
+        return d.toISOString().slice(0, 10);
+    }
+    const now = new Date();
+    return now.toISOString().slice(0, 10);
+}
+
+/** ================= router factory ================= */
 export function currentOrdersRouter({ broadcastToAdmins }) {
     const router = express.Router();
 
@@ -173,8 +228,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const dto = rowToPanelDto(r);
             dto.items = safeParseItemsJSON(r.items_json);
             dto.notes = r.notes;
-
-            // раздельные поля адреса (для формы)
+            // отдельные поля адреса для формы
             dto.addressStreet    = r.address_street;
             dto.addressHouse     = r.address_house;
             dto.addressBuilding  = r.address_building;
@@ -191,6 +245,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
     // POST /api/current-orders
     router.post("/", async (req, res) => {
+        let conn;
         try {
             const ctx = await resolveCompanyContext(req, res);
             if (!ctx) return;
@@ -211,10 +266,17 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const orderNo = b.orderNo || `CO-${Date.now().toString().slice(-8)}`;
             const payment_method = coercePaymentMethod(b.payment);
+            const seqDate = deriveSeqDateFromBody(b); // 'YYYY-MM-DD'
 
-            const [result] = await pool.query(
+            conn = await pool.getConnection();
+            await conn.beginTransaction();
+
+            const dailySeq = await getNextDailySeq(conn, companyId, seqDate);
+
+            const [result] = await conn.query(
                 `INSERT INTO current_orders
-         (company_id, order_no, order_type, status, scheduled_at,
+         (company_id, order_no, order_seq, order_seq_date,
+          order_type, status, scheduled_at,
           courier_unit_id, pickup_unit_id, dispatcher_unit_id,
           payment_method,
           customer_name, customer_phone,
@@ -222,7 +284,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
           notes,
           items_json, amount_subtotal, amount_discount, amount_total)
          VALUES
-         (?, ?, ?, ?, ?,
+         (?, ?, ?, ?,
+          ?, ?, ?,
           ?, ?, ?,
           ?,
           ?, ?,
@@ -232,6 +295,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 [
                     companyId,
                     orderNo,
+                    dailySeq,
+                    seqDate,
                     b.orderType || "active",
                     b.status || "new",
                     b.scheduledAt || null,
@@ -255,6 +320,10 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 ]
             );
 
+            await conn.commit();
+            conn.release();
+            conn = null;
+
             const order_id = result.insertId;
             const [rows] = await pool.query(
                 `SELECT co.*,
@@ -274,6 +343,10 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 broadcastToAdmins({ type: "order_created", companyId, order: item });
             }
         } catch (e) {
+            if (conn) {
+                try { await conn.rollback(); } catch {}
+                conn.release();
+            }
             console.error("create current order", e);
             res.status(500).json({ ok: false, error: "Ошибка сервера" });
         }
@@ -296,6 +369,10 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             } = normalizeItemsAndAmounts(b.selectedItems || []);
 
             const payment_method = coercePaymentMethod(b.payment);
+
+            // ВАЖНО: при апдейте мы НЕ меняем order_seq/order_seq_date,
+            // даже если поменяли scheduledAt или тип. Так сохраняется «исторический» номер.
+            // Если когда-нибудь нужно будет «перенумеровать» — сделаем отдельный эндпоинт.
 
             await pool.query(
                 `UPDATE current_orders
