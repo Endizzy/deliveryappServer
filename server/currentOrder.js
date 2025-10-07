@@ -2,8 +2,7 @@
 import express from "express";
 import pool from "./db.js";
 
-/** ================= helpers ================= */
-
+/** --- helpers --- */
 async function resolveCompanyContext(req, res) {
     const u = req.user || {};
     let companyId = u.companyId ?? u.company_id ?? null;
@@ -70,16 +69,16 @@ function rowToPanelDto(r) {
 
     return {
         id: r.order_id,
-        orderNo: r.order_no,           // старый видимый номер (CO-...)
-        orderSeq: r.order_seq,         // НОВОЕ: «дневной» номер 1..N
-        orderSeqDate: r.order_seq_date,// НОВОЕ: дата операционного дня
-        orderType: r.order_type,       // 'active' | 'preorder'
-        status: r.status,              // 'new' | 'ready' | 'enroute' | 'paused' | 'cancelled'
+        orderNo: r.order_no,
+        orderSeq: r.order_seq ?? null,         // ⬅ добавили
+        orderDay: r.order_seq_date ?? null,    // ⬅ добавили (может быть полезен на фронте)
+        orderType: r.order_type,               // 'active' | 'preorder'
+        status: r.status,                      // 'new' | 'ready' | 'enroute' | 'paused' | 'cancelled'
         createdAt: r.created_at,
         updatedAt: r.updated_at,
         scheduledAt: r.scheduled_at,
         amountTotal: Number(r.amount_total),
-        paymentMethod: r.payment_method,   // 'cash' | 'card' | 'wire'
+        paymentMethod: r.payment_method,       // 'cash' | 'card' | 'wire'
         customer: r.customer_name,
         phone: r.customer_phone,
         address: addr,
@@ -96,7 +95,7 @@ function safeParseItemsJSON(v) {
         if (v == null) return [];
         if (typeof v === "string") return JSON.parse(v);
         if (Buffer.isBuffer(v)) return JSON.parse(v.toString("utf8"));
-        if (typeof v === "object") return v;
+        if (typeof v === "object") return v; // mysql2 может уже отдать объект
         return [];
     } catch {
         return [];
@@ -104,6 +103,7 @@ function safeParseItemsJSON(v) {
 }
 
 function coercePaymentMethod(val) {
+    // приводим к ENUM: 'cash','card','wire'
     const s = String(val || "").trim().toLowerCase();
     if (["cash", "наличные", "нал"].includes(s)) return "cash";
     if (["card", "карта", "банковская карта"].includes(s)) return "card";
@@ -111,60 +111,32 @@ function coercePaymentMethod(val) {
     return "cash";
 }
 
-/**
- * Возвращает следующий дневной номер (1..N) для (company_id, seqDate).
- * Супернадёжно и без гонок: UPDATE → (если 0 строк) INSERT → (если гонка) повторный UPDATE.
- */
-async function getNextDailySeq(conn, companyId, seqDate /* 'YYYY-MM-DD' */) {
-    // 1) пробуем увеличить, если запись уже есть
-    const [r1] = await conn.query(
-        `UPDATE order_day_counters
-       SET last_seq = LAST_INSERT_ID(last_seq + 1)
-     WHERE company_id=? AND seq_date=?`,
-        [companyId, seqDate]
-    );
-    if (r1.affectedRows > 0) {
-        const [[row]] = await conn.query(`SELECT LAST_INSERT_ID() AS seq`);
-        return Number(row.seq);
-    }
-
-    // 2) нет записи — создаём её (номер = 1)
-    try {
-        await conn.query(
-            `INSERT INTO order_day_counters (company_id, seq_date, last_seq)
-       VALUES (?, ?, 1)`,
-            [companyId, seqDate]
-        );
-        return 1;
-    } catch (e) {
-        // 3) гонка вставки — повторяем шаг 1
-        if (e && e.code === "ER_DUP_ENTRY") {
-            const [r2] = await conn.query(
-                `UPDATE order_day_counters
-           SET last_seq = LAST_INSERT_ID(last_seq + 1)
-         WHERE company_id=? AND seq_date=?`,
-                [companyId, seqDate]
-            );
-            if (r2.affectedRows > 0) {
-                const [[row]] = await conn.query(`SELECT LAST_INSERT_ID() AS seq`);
-                return Number(row.seq);
-            }
-        }
-        throw e;
-    }
-}
-
-/** Формируем дату операционного дня (строка YYYY-MM-DD) */
-function deriveSeqDateFromBody(b) {
-    if (String(b?.orderType).toLowerCase() === "preorder" && b?.scheduledAt) {
-        const d = new Date(b.scheduledAt);
+/** Определяем «операционный день» для нумерации */
+function deriveOrderSeqDate(orderType, scheduledAt) {
+    // если предзаказ и есть дата — нумеруем на ту дату; иначе — по текущей дате создания
+    if (orderType === "preorder" && scheduledAt) {
+        const d = new Date(scheduledAt);
+        // YYYY-MM-DD
         return d.toISOString().slice(0, 10);
     }
     const now = new Date();
     return now.toISOString().slice(0, 10);
 }
 
-/** ================= router factory ================= */
+/** Транзакционное получение следующего порядкового номера за день */
+async function allocateDailySeq(conn, companyId, orderSeqDate) {
+    const [rows] = await conn.query(
+        `SELECT COALESCE(MAX(order_seq), 0) AS max_seq
+       FROM current_orders
+      WHERE company_id=? AND order_seq_date=?
+      FOR UPDATE`,
+        [companyId, orderSeqDate]
+    );
+    const next = Number(rows[0]?.max_seq || 0) + 1;
+    return next;
+}
+
+/** --- router factory (инжектим broadcastToAdmins из index.js) --- */
 export function currentOrdersRouter({ broadcastToAdmins }) {
     const router = express.Router();
 
@@ -187,15 +159,15 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             }
 
             const sql = `
-        SELECT co.*,
-               cu1.unit_nickname AS courier_nickname,
-               cu2.unit_nickname AS pickup_nickname
-          FROM current_orders co
-     LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-     LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-         WHERE ${where.join(" AND ")}
-      ORDER BY co.created_at DESC, co.order_id DESC
-         LIMIT 500`;
+                SELECT co.*,
+                       cu1.unit_nickname AS courier_nickname,
+                       cu2.unit_nickname AS pickup_nickname
+                FROM current_orders co
+                         LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                         LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                WHERE ${where.join(" AND ")}
+                ORDER BY co.created_at DESC, co.order_id DESC
+                    LIMIT 500`;
             const [rows] = await pool.query(sql, params);
 
             res.json({ ok: true, items: rows.map(rowToPanelDto) });
@@ -214,13 +186,13 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const id = Number(req.params.id);
 
             const sql = `
-        SELECT co.*,
-               cu1.unit_nickname AS courier_nickname,
-               cu2.unit_nickname AS pickup_nickname
-          FROM current_orders co
-     LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-     LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-         WHERE co.company_id=? AND co.order_id=? LIMIT 1`;
+                SELECT co.*,
+                       cu1.unit_nickname AS courier_nickname,
+                       cu2.unit_nickname AS pickup_nickname
+                FROM current_orders co
+                         LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                         LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                WHERE co.company_id=? AND co.order_id=? LIMIT 1`;
             const [rows] = await pool.query(sql, [companyId, id]);
             if (!rows.length) return res.status(404).json({ ok: false, error: "Заказ не найден" });
 
@@ -228,7 +200,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const dto = rowToPanelDto(r);
             dto.items = safeParseItemsJSON(r.items_json);
             dto.notes = r.notes;
-            // отдельные поля адреса для формы
+
+            // раздельные поля адреса (для формы)
             dto.addressStreet    = r.address_street;
             dto.addressHouse     = r.address_house;
             dto.addressBuilding  = r.address_building;
@@ -266,73 +239,81 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const orderNo = b.orderNo || `CO-${Date.now().toString().slice(-8)}`;
             const payment_method = coercePaymentMethod(b.payment);
-            const seqDate = deriveSeqDateFromBody(b); // 'YYYY-MM-DD'
+            const order_type = b.orderType || "active";
+            const scheduled_at = b.scheduledAt || null;
+
+            // определяем «операционный день»
+            const order_seq_date = deriveOrderSeqDate(order_type, scheduled_at);
 
             conn = await pool.getConnection();
-            await conn.beginTransaction();
+            let attempts = 0;
+            let result;
 
-            const dailySeq = await getNextDailySeq(conn, companyId, seqDate);
+            while (true) {
+                attempts++;
+                try {
+                    await conn.beginTransaction();
 
-            const [result] = await conn.query(
-                `INSERT INTO current_orders
-         (company_id, order_no, order_seq, order_seq_date,
-          order_type, status, scheduled_at,
-          courier_unit_id, pickup_unit_id, dispatcher_unit_id,
-          payment_method,
-          customer_name, customer_phone,
-          address_street, address_house, address_building, address_apartment, address_floor, address_code,
-          notes,
-          items_json, amount_subtotal, amount_discount, amount_total)
-         VALUES
-         (?, ?, ?, ?,
-          ?, ?, ?,
-          ?, ?, ?,
-          ?,
-          ?, ?,
-          ?, ?, ?, ?, ?, ?,
-          ?,
-          ?, ?, ?, ?)`,
-                [
-                    companyId,
-                    orderNo,
-                    dailySeq,
-                    seqDate,
-                    b.orderType || "active",
-                    b.status || "new",
-                    b.scheduledAt || null,
-                    b.courierId || null,
-                    b.pickupId || null,
-                    (user && user.unitId) || null,
-                    payment_method,
-                    b.customer,
-                    b.phone,
-                    b.street || null,
-                    b.house || null,
-                    b.building || null,
-                    b.apart || null,
-                    b.floor || null,
-                    b.code || null,
-                    b.notes || null,
-                    JSON.stringify(items),
-                    amount_subtotal,
-                    amount_discount,
-                    amount_total,
-                ]
-            );
+                    // берём следующий порядковый номер за день под блокировкой
+                    const nextSeq = await allocateDailySeq(conn, companyId, order_seq_date);
 
-            await conn.commit();
-            conn.release();
-            conn = null;
+                    // вставка
+                    const [ins] = await conn.query(
+                        `INSERT INTO current_orders
+             (company_id, order_no, order_seq, order_seq_date,
+              order_type, status, scheduled_at,
+              courier_unit_id, pickup_unit_id, dispatcher_unit_id,
+              payment_method,
+              customer_name, customer_phone,
+              address_street, address_house, address_building, address_apartment, address_floor, address_code,
+              notes,
+              items_json, amount_subtotal, amount_discount, amount_total)
+             VALUES
+             (?, ?, ?, ?,
+              ?, ?, ?,
+              ?, ?, ?,
+              ?,
+              ?, ?,
+              ?, ?, ?, ?, ?, ?,
+              ?,
+              ?, ?, ?, ?)`,
+                        [
+                            companyId, orderNo, nextSeq, order_seq_date,
+                            order_type, b.status || "new", scheduled_at,
+                            b.courierId || null, b.pickupId || null, (user && user.unitId) || null,
+                            payment_method,
+                            b.customer, b.phone,
+                            b.street || null, b.house || null, b.building || null, b.apart || null, b.floor || null, b.code || null,
+                            b.notes || null,
+                            JSON.stringify(items), amount_subtotal, amount_discount, amount_total
+                        ]
+                    );
+
+                    await conn.commit();
+                    result = ins;
+                    break; // успех
+                } catch (e) {
+                    await conn.rollback();
+                    // гонка: кто-то вставил с этим же номером — повторим
+                    if (e && e.code === "ER_DUP_ENTRY" && attempts < 5) {
+                        // микропаузу, чтобы сменился MAX()
+                        await new Promise(r => setTimeout(r, 10 + Math.random() * 40));
+                        continue;
+                    }
+                    throw e;
+                }
+            }
 
             const order_id = result.insertId;
+
             const [rows] = await pool.query(
                 `SELECT co.*,
-                cu1.unit_nickname AS courier_nickname,
-                cu2.unit_nickname AS pickup_nickname
-           FROM current_orders co
-      LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-      LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
+                        cu1.unit_nickname AS courier_nickname,
+                        cu2.unit_nickname AS pickup_nickname
+                 FROM current_orders co
+                          LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                          LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                 WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, order_id]
             );
 
@@ -343,12 +324,10 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 broadcastToAdmins({ type: "order_created", companyId, order: item });
             }
         } catch (e) {
-            if (conn) {
-                try { await conn.rollback(); } catch {}
-                conn.release();
-            }
             console.error("create current order", e);
             res.status(500).json({ ok: false, error: "Ошибка сервера" });
+        } finally {
+            if (conn) conn.release();
         }
     });
 
@@ -370,19 +349,16 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const payment_method = coercePaymentMethod(b.payment);
 
-            // ВАЖНО: при апдейте мы НЕ меняем order_seq/order_seq_date,
-            // даже если поменяли scheduledAt или тип. Так сохраняется «исторический» номер.
-            // Если когда-нибудь нужно будет «перенумеровать» — сделаем отдельный эндпоинт.
-
+            // ВАЖНО: НЕ трогаем order_seq / order_seq_date при редактировании!
             await pool.query(
                 `UPDATE current_orders
-            SET order_type=?, status=?, scheduled_at=?,
-                courier_unit_id=?, pickup_unit_id=?,
-                payment_method=?,
-                customer_name=?, customer_phone=?,
-                address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?,
-                notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW()
-          WHERE company_id=? AND order_id=?`,
+                 SET order_type=?, status=?, scheduled_at=?,
+                     courier_unit_id=?, pickup_unit_id=?,
+                     payment_method=?,
+                     customer_name=?, customer_phone=?,
+                     address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?,
+                     notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW()
+                 WHERE company_id=? AND order_id=?`,
                 [
                     b.orderType || "active",
                     b.status || "new",
@@ -410,12 +386,12 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const [rows] = await pool.query(
                 `SELECT co.*,
-                cu1.unit_nickname AS courier_nickname,
-                cu2.unit_nickname AS pickup_nickname
-           FROM current_orders co
-      LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-      LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
+                        cu1.unit_nickname AS courier_nickname,
+                        cu2.unit_nickname AS pickup_nickname
+                 FROM current_orders co
+                          LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                          LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                 WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, id]
             );
             if (!rows.length)
@@ -446,18 +422,18 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             await pool.query(
                 `UPDATE current_orders SET status=?, updated_at=NOW()
-          WHERE company_id=? AND order_id=?`,
+                 WHERE company_id=? AND order_id=?`,
                 [status, companyId, id]
             );
 
             const [rows] = await pool.query(
                 `SELECT co.*,
-                cu1.unit_nickname AS courier_nickname,
-                cu2.unit_nickname AS pickup_nickname
-           FROM current_orders co
-      LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-      LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
+                        cu1.unit_nickname AS courier_nickname,
+                        cu2.unit_nickname AS pickup_nickname
+                 FROM current_orders co
+                          LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                          LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                 WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, id]
             );
             if (!rows.length) return res.json({ ok: true });
