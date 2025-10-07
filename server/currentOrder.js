@@ -1,4 +1,3 @@
-// server/currentOrders.js
 import express from "express";
 import pool from "./db.js";
 
@@ -70,8 +69,8 @@ function rowToPanelDto(r) {
     return {
         id: r.order_id,
         orderNo: r.order_no,
-        orderSeq: r.order_seq ?? null,         // ⬅ добавили
-        orderDay: r.order_seq_date ?? null,    // ⬅ добавили (может быть полезен на фронте)
+        orderSeq: r.order_seq ?? null,
+        orderDay: r.order_seq_date ?? null,
         orderType: r.order_type,               // 'active' | 'preorder'
         status: r.status,                      // 'new' | 'ready' | 'enroute' | 'paused' | 'cancelled'
         createdAt: r.created_at,
@@ -257,7 +256,6 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     // берём следующий порядковый номер за день под блокировкой
                     const nextSeq = await allocateDailySeq(conn, companyId, order_seq_date);
 
-                    // вставка
                     const [ins] = await conn.query(
                         `INSERT INTO current_orders
              (company_id, order_no, order_seq, order_seq_date,
@@ -296,7 +294,6 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     await conn.rollback();
                     // гонка: кто-то вставил с этим же номером — повторим
                     if (e && e.code === "ER_DUP_ENTRY" && attempts < 5) {
-                        // микропаузу, чтобы сменился MAX()
                         await new Promise(r => setTimeout(r, 10 + Math.random() * 40));
                         continue;
                     }
@@ -349,7 +346,6 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const payment_method = coercePaymentMethod(b.payment);
 
-            // ВАЖНО: НЕ трогаем order_seq / order_seq_date при редактировании!
             await pool.query(
                 `UPDATE current_orders
                  SET order_type=?, status=?, scheduled_at=?,
