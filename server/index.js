@@ -5,7 +5,7 @@ import http from 'http';
 import { getUser } from "./getUser.js";
 import menuApi from "./menuApi.js";
 import { WebSocketServer } from 'ws';
-import { register, login, authMiddleware } from './auth.js';
+import { register, login, courierlogin, authMiddleware } from './auth.js';
 import path from "path";
 import { fileURLToPath } from "url";
 import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js";
@@ -41,6 +41,7 @@ app.get('/health', (_, res) => res.send('OK'));
 // === AUTH / PROFILE ===
 app.post("/api/auth/register", register);
 app.post("/api/auth/login", login);
+app.post("/api/auth/courierlogin", courierlogin);
 app.get("/api/profile", authMiddleware, (req, res) => {
     res.json({ ok: true, user: req.user });
 });
