@@ -1,4 +1,3 @@
-// server/auth.js
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import pool from "./db.js";
@@ -70,6 +69,51 @@ export async function login(req, res) {
 
         const token = jwt.sign(
             { userId: user.user_id, role: user.role, companyId: user.company_id },
+            JWT_SECRET,
+            { expiresIn: "30m" }
+        );
+
+        return res.json({ ok: true, token });
+    } catch (err) {
+        console.error("Ошибка логина:", err);
+        res.status(500).json({ error: "Ошибка сервера" });
+    }
+}
+
+export async function courierlogin(req, res) {
+    try {
+        const { unit_email, unit_password } = req.body; // здесь может прийти email ИЛИ телефон
+        if (!unit_email || !unit_password) {
+            return res.status(400).json({ error: "Email и пароль обязательны" });
+        }
+
+        const identifier = String(unit_email).trim();
+
+        const [rows] = await pool.query(
+            `SELECT unit_id, unit_nickname, unit_role, company_id, unit_password_hash, is_active
+         FROM company_units
+        WHERE unit_email = ? OR unit_phone = ?
+        LIMIT 1`,
+            [identifier, identifier]
+        );
+
+        if (rows.length === 0) {
+            return res.status(401).json({ error: "Неверный email или пароль" });
+        }
+
+        const user = rows[0];
+
+        if (!user.is_active) {
+            return res.status(403).json({ error: "Учётная запись деактивирована" });
+        }
+
+        const valid = await bcrypt.compare(unit_password, user.unit_password_hash);
+        if (!valid) {
+            return res.status(401).json({ error: "Неверный email или пароль" });
+        }
+
+        const token = jwt.sign(
+            { userId: user.unit_id, role: user.unit_role, companyId: user.company_id },
             JWT_SECRET,
             { expiresIn: "30m" }
         );
