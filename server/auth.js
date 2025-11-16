@@ -113,7 +113,12 @@ export async function courierlogin(req, res) {
         }
 
         const token = jwt.sign(
-            { userId: user.unit_id, role: user.unit_role, companyId: user.company_id },
+            {
+                userId: user.unit_id,
+                role: user.unit_role,
+                companyId: user.company_id,
+                unitNickname: typeof user.unit_nickname === 'string' ? user.unit_nickname : null
+            },
             JWT_SECRET,
             { expiresIn: "30m" }
         );
