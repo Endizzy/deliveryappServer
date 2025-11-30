@@ -90,7 +90,8 @@ app.put("/api/staff/:id",    authMiddleware, updateUnit);
 app.delete("/api/staff/:id", authMiddleware, deleteUnit);
 
 // === ДЕМО/ЛОКАЦИИ (опционально) ===
-const state = new Map(); // { [courierId]: { lat,lng,speedKmh,timestamp,orderId,status } }
+// state stores latest known info per courierId, including courierNickname
+const state = new Map(); // { [courierId]: { lat,lng,speedKmh,timestamp,orderId,status,courierNickname } }
 const orders = new Map(); // демо-заказы
 const unitsMeta = new Map(); // courierId -> courierNickname
 let nextOrderId = 1;
@@ -99,11 +100,20 @@ function parseJsonSafe(str) {
     try { return JSON.parse(str); } catch { return null; }
 }
 
+// REST endpoint: accept location updates (mobile may POST here)
 app.post('/api/location', (req, res) => {
-    const { courierId, lat, lng, speedKmh, orderId, status, timestamp } = req.body || {};
+    const { courierId, lat, lng, speedKmh, orderId, status, timestamp, courierNickname } = req.body || {};
     if (typeof courierId === 'undefined' || typeof lat !== 'number' || typeof lng !== 'number') {
         return res.status(400).json({ ok: false, error: 'bad payload' });
     }
+
+    // If client provided a nickname in REST body, update unitsMeta
+    if (courierNickname) {
+        try { unitsMeta.set(String(courierId), String(courierNickname)); } catch (e) {}
+    }
+
+    const nickname = unitsMeta.get(String(courierId)) ?? null;
+
     const payload = {
         type: 'location',
         courierId: String(courierId),
@@ -112,7 +122,9 @@ app.post('/api/location', (req, res) => {
         orderId: orderId ?? null,
         status: status ?? 'unknown',
         timestamp: timestamp || new Date().toISOString(),
+        courierNickname: nickname,
     };
+
     state.set(String(courierId), { ...payload, type: undefined });
     broadcastToAdmins(payload);
     res.json({ ok: true });
@@ -164,7 +176,7 @@ wss.on('connection', (ws) => {
             const cid = Number(data.companyId);
             ws.companyId = Number.isFinite(cid) ? cid : null;
 
-            // если курьер прислал courierId + courierNickname — запомним ник и пометьм сокет
+            // если курьер прислал courierId + courierNickname — запомним ник и пометим сокет
             if (ws.clientType === 'courier' && typeof data.courierId !== 'undefined') {
                 ws.courierId = String(data.courierId);
                 if (data.courierNickname) {
@@ -238,7 +250,6 @@ wss.on('connection', (ws) => {
         console.warn('WS connection error', err && err.message ? err.message : err);
     });
 });
-
 
 server.listen(PORT, () => {
     console.log(`HTTP + WS server running on port ${PORT}`);
