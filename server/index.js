@@ -92,6 +92,7 @@ app.delete("/api/staff/:id", authMiddleware, deleteUnit);
 // === ДЕМО/ЛОКАЦИИ (опционально) ===
 const state = new Map(); // { [courierId]: { lat,lng,speedKmh,timestamp,orderId,status } }
 const orders = new Map(); // демо-заказы
+const unitsMeta = new Map(); // courierId -> courierNickname
 let nextOrderId = 1;
 
 function parseJsonSafe(str) {
@@ -150,7 +151,8 @@ wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws) => {
     ws.clientType = 'unknown';
-    ws.companyId = null; // <— помечаем компанию соединения
+    ws.companyId = null; // помечаем компанию соединения
+    ws.courierId = null; // опционально: будем сохранять id курьера если он авторизуется
 
     ws.on('message', (raw) => {
         const data = parseJsonSafe(raw);
@@ -158,14 +160,34 @@ wss.on('connection', (ws) => {
 
         if (data.type === 'hello') {
             ws.clientType = data.role === 'admin' ? 'admin' : 'courier';
-            // важно: клиент присылает companyId, сохраняем на сокете
+            // клиент может прислать companyId, сохраним на сокете
             const cid = Number(data.companyId);
             ws.companyId = Number.isFinite(cid) ? cid : null;
 
+            // если курьер прислал courierId + courierNickname — запомним ник и пометьм сокет
+            if (ws.clientType === 'courier' && typeof data.courierId !== 'undefined') {
+                ws.courierId = String(data.courierId);
+                if (data.courierNickname) {
+                    try {
+                        unitsMeta.set(String(data.courierId), String(data.courierNickname));
+                    } catch (e) {
+                        // ignore
+                    }
+                }
+            }
+
             if (ws.clientType === 'admin') {
-                // можно отправлять снапшоты, но фронт их игнорирует — оставим как было
-                const snapshot = Array.from(state.entries())
-                    .map(([courierId, v]) => ({ courierId, ...v }));
+                // snapshot: включаем courierNickname из state (если есть) или из unitsMeta
+                const snapshot = Array.from(state.entries()).map(([courierId, v]) => ({
+                    courierId,
+                    lat: v.lat,
+                    lng: v.lng,
+                    speedKmh: v.speedKmh ?? null,
+                    orderId: v.orderId ?? null,
+                    status: v.status ?? 'unknown',
+                    timestamp: v.timestamp ?? new Date().toISOString(),
+                    courierNickname: v.courierNickname ?? unitsMeta.get(String(courierId)) ?? null,
+                }));
                 ws.send(JSON.stringify({ type: 'snapshot', items: snapshot }));
                 ws.send(JSON.stringify({ type: 'orders_snapshot', items: Array.from(orders.values()) }));
             }
@@ -174,24 +196,49 @@ wss.on('connection', (ws) => {
 
         // Курьер шлёт локацию по WS
         if (data.type === 'location' && ws.clientType !== 'admin') {
-            const { courierId, lat, lng, speedKmh, orderId, status, timestamp } = data;
+            const { courierId, lat, lng, speedKmh, orderId, status, timestamp, courierNickname } = data;
             if (typeof courierId === 'undefined' || typeof lat !== 'number' || typeof lng !== 'number') return;
+
+            // Если в сообщении пришёл nickname — обновим unitsMeta
+            if (courierNickname) {
+                try {
+                    unitsMeta.set(String(courierId), String(courierNickname));
+                } catch (e) {
+                    // ignore
+                }
+            }
 
             const payload = {
                 type: 'location',
                 courierId,
-                lat, lng,
+                lat,
+                lng,
                 speedKmh: typeof speedKmh === 'number' ? speedKmh : null,
                 orderId: orderId ?? null,
                 status: status ?? 'unknown',
-                timestamp: timestamp || new Date().toISOString()
+                timestamp: timestamp || new Date().toISOString(),
+                courierNickname: unitsMeta.get(String(courierId)) ?? null,
             };
 
+            // Сохраняем состояние (без поля type)
             state.set(String(courierId), { ...payload, type: undefined });
             broadcastToAdmins(payload);
         }
     });
+
+    // по закрытию соединения просто очищаем пометки на ws (не трогаем unitsMeta, т.к. ник может быть полезен позже)
+    ws.on('close', () => {
+        ws.clientType = 'unknown';
+        ws.companyId = null;
+        ws.courierId = null;
+    });
+
+    ws.on('error', (err) => {
+        // можно логировать, но не ломаем поток
+        console.warn('WS connection error', err && err.message ? err.message : err);
+    });
 });
+
 
 server.listen(PORT, () => {
     console.log(`HTTP + WS server running on port ${PORT}`);
