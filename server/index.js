@@ -6,6 +6,7 @@ import { getUser } from "./getUser.js";
 import menuApi from "./menuApi.js";
 import { WebSocketServer } from 'ws';
 import { register, login, courierlogin, authMiddleware } from './auth.js';
+import mobileOrdersRouter from "./mobileOrdersRouter.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js";
@@ -71,6 +72,9 @@ function broadcastToAdmins(payload) {
 
 // === CURRENT ORDERS ===
 app.use("/api/current-orders", authMiddleware, currentOrdersRouter({ broadcastToAdmins }));
+
+// === MOBILE ORDERS (for couriers) ===
+app.use("/api/mobile-orders", authMiddleware, mobileOrdersRouter);
 
 // Поддержка данных для создания заказа
 app.get("/api/order-support/couriers",      authMiddleware, getCouriers);
