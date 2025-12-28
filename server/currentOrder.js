@@ -2,7 +2,7 @@ import express from "express";
 import pool from "./db.js";
 
 /** --- helpers --- */
-async function resolveCompanyContext(req, res) {
+export async function resolveCompanyContext(req, res) {
     const u = req.user || {};
     let companyId = u.companyId ?? u.company_id ?? null;
 
