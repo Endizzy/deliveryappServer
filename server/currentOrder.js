@@ -1,5 +1,6 @@
 import express from "express";
 import pool from "./db.js";
+import crypto from "crypto";
 
 /** --- helpers --- */
 export async function resolveCompanyContext(req, res) {
@@ -318,7 +319,13 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             res.json({ ok: true, item });
 
             if (typeof broadcastToAdmins === "function") {
-                broadcastToAdmins({ type: "order_created", companyId, order: item });
+                broadcastToAdmins({
+                    type: "order_created",
+                    eventId: crypto.randomUUID(),
+                    ts: Date.now(),
+                    companyId,
+                    order: item,
+                });
             }
         } catch (e) {
             console.error("create current order", e);
