@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import { getUser } from "./getUser.js";
+import { getCompany } from "./getCompany.js";
 import menuApi from "./menuApi.js";
 import { WebSocketServer } from 'ws';
 import { register, login, courierlogin, authMiddleware } from './auth.js';
@@ -47,7 +48,6 @@ app.get("/api/profile", authMiddleware, (req, res) => {
     res.json({ ok: true, user: req.user });
 });
 
-// Заготовка: позже свяжем с WS (объявим ниже)
 let wss;
 
 // Функция рассылки с учётом companyId
@@ -86,6 +86,9 @@ app.use("/api/menu", authMiddleware, menuApi);
 
 // === USER ===
 app.get("/api/user/me", authMiddleware, getUser);
+
+// === MINIMAL COMPANY INFO ===
+app.get("/api/company/me", authMiddleware, getCompany);
 
 // === STAFF ===
 app.get("/api/staff",        authMiddleware, listUnits);
