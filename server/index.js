@@ -6,7 +6,17 @@ import { getUser } from "./getUser.js";
 import { getCompany } from "./getCompany.js";
 import menuApi from "./menuApi.js";
 import { WebSocketServer } from 'ws';
-import { register, login, courierlogin, authMiddleware } from './auth.js';
+import {
+    register,
+    login,
+    courierlogin,
+    authMiddleware,
+    setup2FA,
+    verifySetup2FA,
+    disable2FA,
+    get2FAStatus,
+    verifyLogin2FA
+} from './auth.js';
 import mobileOrdersRouter from "./mobileOrdersRouter.js";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -47,6 +57,13 @@ app.post("/api/auth/courierlogin", courierlogin);
 app.get("/api/profile", authMiddleware, (req, res) => {
     res.json({ ok: true, user: req.user });
 });
+
+// === 2FA ROUTES ===
+app.post("/api/auth/2fa/setup", authMiddleware, setup2FA);
+app.post("/api/auth/2fa/verify-setup", authMiddleware, verifySetup2FA);
+app.post("/api/auth/2fa/disable", authMiddleware, disable2FA);
+app.get("/api/auth/2fa/status", authMiddleware, get2FAStatus);
+app.post("/api/auth/2fa/verify-login", verifyLogin2FA); // No auth required - uses tempToken
 
 let wss;
 
