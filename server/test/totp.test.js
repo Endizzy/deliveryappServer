@@ -221,7 +221,7 @@ describe("generateOTPAuthURI", () => {
         const uri = generateOTPAuthURI(email, secret, "MyApp");
 
         assert.ok(uri.includes("issuer=MyApp"));
-        assert.ok(uri.startsWith("otpauth://totp/MyApp%3A"));
+        assert.ok(uri.startsWith("otpauth://totp/MyApp:"));
     });
 });
 
