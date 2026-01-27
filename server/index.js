@@ -120,9 +120,20 @@ const orders = new Map(); // демо-заказы
 const unitsMeta = new Map(); // courierId -> courierNickname
 let nextOrderId = 1;
 
-function parseJsonSafe(str) {
-    try { return JSON.parse(str); } catch { return null; }
+function parseJsonSafe(data) {
+    try {
+        if (Buffer.isBuffer(data)) {
+            return JSON.parse(data.toString('utf8'));
+        }
+        if (typeof data === 'string') {
+            return JSON.parse(data);
+        }
+        return null;
+    } catch {
+        return null;
+    }
 }
+
 
 // REST endpoint: accept location updates (mobile may POST here)
 app.post('/api/location', (req, res) => {
