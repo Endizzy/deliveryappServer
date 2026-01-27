@@ -76,16 +76,16 @@ function broadcastToAdmins(payload) {
         if (ws.readyState !== ws.OPEN) return;
         if (ws.clientType !== 'admin') return;
 
-        // Если компания указана — шлём только совпадающим
+        // Если payload содержит companyId — фильтруем
         if (typeof payload?.companyId === 'number') {
             if (ws.companyId === payload.companyId) ws.send(msg);
-            return;
+        } else {
+            // Иначе шлём всем админам
+            ws.send(msg);
         }
-
-        // Иначе (наследие/прочие типы сообщений) — шлём всем админам
-        ws.send(msg);
     });
 }
+
 
 // === CURRENT ORDERS ===
 app.use("/api/current-orders", authMiddleware, currentOrdersRouter({ broadcastToAdmins }));
