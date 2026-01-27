@@ -112,7 +112,7 @@ function coercePaymentMethod(val) {
 }
 
 /** Определяем «операционный день» для нумерации */
-function deriveOrderSeqDate(orderType, scheduledAt) {
+export function deriveOrderSeqDate(orderType, scheduledAt) {
     // если предзаказ и есть дата — нумеруем на ту дату; иначе — по текущей дате создания
     if (orderType === "preorder" && scheduledAt) {
         const d = new Date(scheduledAt);
@@ -124,7 +124,7 @@ function deriveOrderSeqDate(orderType, scheduledAt) {
 }
 
 /** Транзакционное получение следующего порядкового номера за день */
-async function allocateDailySeq(conn, companyId, orderSeqDate) {
+export async function allocateDailySeq(conn, companyId, orderSeqDate) {
     const [rows] = await conn.query(
         `SELECT COALESCE(MAX(order_seq), 0) AS max_seq
        FROM current_orders
