@@ -25,59 +25,67 @@ export async function resolveCompanyContext(req, res) {
 }
 
 /**
- * Деньги считаем ТОЧНО в центах (целые числа), чтобы не было 10.26 вместо 10.25.
- * Это НЕ "округление" цены, это корректная денежная арифметика без float-ошибок.
+ * Денежный парсер БЕЗ округления:
+ * - "2" -> 200
+ * - "2.0" -> 200
+ * - "2.005" -> 200 (обрезаем до 2 знаков, НЕ округляем)
+ * - "10,25" -> 1025
  */
-function toCents(v) {
-  // поддержка строк из MySQL DECIMAL и ввода "2,5"
-  const s = String(v ?? "").trim().replace(",", ".");
-  if (!s) return 0;
-  const n = Number(s);
-  if (!Number.isFinite(n)) return 0;
-  // ВНИМАНИЕ: если в системе могут быть значения с >2 знаками после запятой,
-  // тут произойдёт приведение к центам (это неизбежно, т.к. валюта EUR = 2 знака).
-  return Math.round(n * 100);
+function moneyToCentsNoRound(v) {
+  if (v == null) return 0;
+  const s0 = String(v).trim();
+  if (!s0) return 0;
+
+  const s = s0.replace(",", ".");
+  const m = s.match(/^(-)?(\d+)(?:\.(\d+))?$/);
+  if (!m) return 0;
+
+  const sign = m[1] ? -1 : 1;
+  const whole = parseInt(m[2], 10) || 0;
+
+  // берём ТОЛЬКО первые 2 знака дроби, остальное отбрасываем
+  const fracRaw = (m[3] || "");
+  const frac2 = (fracRaw + "00").slice(0, 2);
+  const frac = parseInt(frac2, 10) || 0;
+
+  return sign * (whole * 100 + frac);
 }
 
 function centsToMoney(cents) {
+  // cents - целое число
   return Number((cents / 100).toFixed(2));
 }
 
 function normalizeItemsAndAmounts(items) {
+  // оставляем твою старую (рабочую) логику расчёта товаров
   const norm = (Array.isArray(items) ? items : []).map((it) => {
-    const priceCents = toCents(it.price);
+    const price = Number(it.price || 0);
     const discount = Number(it.discount || 0);
     const qty = Number(it.quantity || 0);
 
-    // точная цена со скидкой в центах
-    const finalCents = Math.round((priceCents * (100 - discount)) / 100);
-    const lineCents = finalCents * qty;
+    const final_price = +(price * (1 - discount / 100)).toFixed(2);
+    const line_total = +(final_price * qty).toFixed(2);
 
     return {
       id: it.id ?? null,
       name: it.name ?? "",
-      price: centsToMoney(priceCents),
-      discount, // это процент, не деньги
-      final_price: centsToMoney(finalCents),
+      price,
+      discount,
+      final_price,
       quantity: qty,
-      line_total: centsToMoney(lineCents),
+      line_total,
     };
   });
 
-  // subtotal без скидок (price * qty)
-  const subtotalCents = norm.reduce((s, r) => s + toCents(r.price) * r.quantity, 0);
-
-  // itemsTotal со скидками (sum of line_total)
-  const itemsTotalCents = norm.reduce((s, r) => s + toCents(r.line_total), 0);
-
-  const discountCents = subtotalCents - itemsTotalCents;
+  const subtotal = +norm.reduce((s, r) => s + r.price * r.quantity, 0).toFixed(2);
+  const total = +norm.reduce((s, r) => s + r.line_total, 0).toFixed(2);
+  const discount = +(subtotal - total).toFixed(2);
 
   return {
     items: norm,
-    amount_subtotal: centsToMoney(subtotalCents),
-    amount_discount: centsToMoney(discountCents),
-    amount_items_total: centsToMoney(itemsTotalCents), // total товаров (со скидками), без доставки
-    amount_total: centsToMoney(itemsTotalCents),       // пока без доставки
+    amount_subtotal: subtotal,
+    amount_discount: discount,
+    amount_total: total, // это товары со скидками (как раньше)
   };
 }
 
@@ -98,14 +106,14 @@ function rowToPanelDto(r) {
     orderNo: r.order_no,
     orderSeq: r.order_seq ?? null,
     orderDay: r.order_seq_date ?? null,
-    orderType: r.order_type, // 'active' | 'preorder'
-    status: r.status, // 'new' | 'ready' | 'enroute' | 'paused' | 'cancelled'
+    orderType: r.order_type,
+    status: r.status,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     scheduledAt: r.scheduled_at,
     amountTotal: Number(r.amount_total),
     deliveryFee: Number(r.delivery_fee || 0),
-    paymentMethod: r.payment_method, // 'cash' | 'card' | 'wire'
+    paymentMethod: r.payment_method,
     customer: r.customer_name,
     phone: r.customer_phone,
     address: addr,
@@ -122,7 +130,7 @@ function safeParseItemsJSON(v) {
     if (v == null) return [];
     if (typeof v === "string") return JSON.parse(v);
     if (Buffer.isBuffer(v)) return JSON.parse(v.toString("utf8"));
-    if (typeof v === "object") return v; // mysql2 может уже отдать объект
+    if (typeof v === "object") return v;
     return [];
   } catch {
     return [];
@@ -137,7 +145,6 @@ function coercePaymentMethod(val) {
   return "cash";
 }
 
-/** Определяем «операционный день» для нумерации */
 export function deriveOrderSeqDate(orderType, scheduledAt) {
   if (orderType === "preorder" && scheduledAt) {
     const d = new Date(scheduledAt);
@@ -147,7 +154,6 @@ export function deriveOrderSeqDate(orderType, scheduledAt) {
   return now.toISOString().slice(0, 10);
 }
 
-/** Транзакционное получение следующего порядкового номера за день */
 export async function allocateDailySeq(conn, companyId, orderSeqDate) {
   const [rows] = await conn.query(
     `SELECT COALESCE(MAX(order_seq), 0) AS max_seq
@@ -159,7 +165,6 @@ export async function allocateDailySeq(conn, companyId, orderSeqDate) {
   return Number(rows[0]?.max_seq || 0) + 1;
 }
 
-/** --- router factory (инжектим broadcastToAdmins из index.js) --- */
 export function currentOrdersRouter({ broadcastToAdmins }) {
   const router = express.Router();
 
@@ -247,28 +252,24 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
       const { companyId, user } = ctx;
       const b = req.body || {};
 
-      // ---- validate base fields ----
       if (!b.customer || !b.phone)
         return res.status(400).json({ ok: false, error: "Имя и телефон обязательны" });
       if (!b.payment)
         return res.status(400).json({ ok: false, error: "Способ оплаты обязателен" });
 
-      // ---- delivery fee (точно) ----
-      const deliveryFeeCents = toCents(b.deliveryFee ?? 0);
+      // товары (как раньше)
+      const { items, amount_subtotal, amount_discount, amount_total: items_total } =
+        normalizeItemsAndAmounts(b.selectedItems || []);
+
+      // доставка БЕЗ округления вверх
+      const deliveryFeeCents = moneyToCentsNoRound(b.deliveryFee ?? 0);
       if (deliveryFeeCents < 0) {
-        return res
-          .status(400)
-          .json({ ok: false, error: "Плата за доставку не может быть отрицательной" });
+        return res.status(400).json({ ok: false, error: "Плата за доставку не может быть отрицательной" });
       }
       const delivery_fee = centsToMoney(deliveryFeeCents);
 
-      // ---- items & amounts (server is source of truth) ----
-      const norm = normalizeItemsAndAmounts(b.selectedItems || []);
-      const { items, amount_subtotal, amount_discount } = norm;
-
-      const itemsTotalCents = toCents(norm.amount_items_total ?? norm.amount_total ?? 0);
-
-      // итог = товары + доставка (точно)
+      // итог = товары + доставка (в центах, без округления)
+      const itemsTotalCents = moneyToCentsNoRound(items_total);
       const amount_total = centsToMoney(itemsTotalCents + deliveryFeeCents);
 
       const orderNo = b.orderNo || `CO-${Date.now().toString().slice(-8)}`;
@@ -389,28 +390,22 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
       const ctx = await resolveCompanyContext(req, res);
       if (!ctx) return;
       const { companyId } = ctx;
-
       const id = Number(req.params.id);
-      if (!Number.isFinite(id) || id <= 0) {
-        return res.status(400).json({ ok: false, error: "Некорректный id заказа" });
-      }
-
       const b = req.body || {};
 
-      // ---- delivery fee (точно) ----
-      const deliveryFeeCents = toCents(b.deliveryFee ?? 0);
+      // товары (как раньше)
+      const { items, amount_subtotal, amount_discount, amount_total: items_total } =
+        normalizeItemsAndAmounts(b.selectedItems || []);
+
+      // доставка БЕЗ округления вверх
+      const deliveryFeeCents = moneyToCentsNoRound(b.deliveryFee ?? 0);
       if (deliveryFeeCents < 0) {
-        return res
-          .status(400)
-          .json({ ok: false, error: "Плата за доставку не может быть отрицательной" });
+        return res.status(400).json({ ok: false, error: "Плата за доставку не может быть отрицательной" });
       }
       const delivery_fee = centsToMoney(deliveryFeeCents);
 
-      // ---- items & amounts (server is source of truth) ----
-      const norm = normalizeItemsAndAmounts(b.selectedItems || []);
-      const { items, amount_subtotal, amount_discount } = norm;
-
-      const itemsTotalCents = toCents(norm.amount_items_total ?? norm.amount_total ?? 0);
+      // итог = товары + доставка (точно)
+      const itemsTotalCents = moneyToCentsNoRound(items_total);
       const amount_total = centsToMoney(itemsTotalCents + deliveryFeeCents);
 
       const payment_method = coercePaymentMethod(b.payment);
@@ -461,10 +456,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
         [companyId, id]
       );
-
-      if (!rows.length) {
-        return res.status(404).json({ ok: false, error: "Заказ не найден" });
-      }
+      if (!rows.length) return res.status(404).json({ ok: false, error: "Заказ не найден" });
 
       const item = rowToPanelDto(rows[0]);
       res.json({ ok: true, item });
@@ -478,7 +470,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
     }
   });
 
-  // PATCH /api/current-orders/:id/status  {status:'ready'|'enroute'|...}
+  // PATCH /api/current-orders/:id/status
   router.patch("/:id/status", async (req, res) => {
     try {
       const ctx = await resolveCompanyContext(req, res);
@@ -506,11 +498,10 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
       );
       if (!rows.length) return res.json({ ok: true });
 
-      const item = rowToPanelDto(rows[0]);
       res.json({ ok: true });
 
       if (typeof broadcastToAdmins === "function") {
-        broadcastToAdmins({ type: "order_updated", companyId, order: item });
+        broadcastToAdmins({ type: "order_updated", companyId, order: rowToPanelDto(rows[0]) });
       }
     } catch (e) {
       console.error("patch status current order", e);
