@@ -27,35 +27,46 @@ export async function resolveCompanyContext(req, res) {
     return { companyId: Number(companyId), user: req.user };
 }
 
+function money2(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return +n.toFixed(2);
+}
+
+
 function normalizeItemsAndAmounts(items) {
     const norm = (Array.isArray(items) ? items : []).map((it) => {
         const price = Number(it.price || 0);
         const discount = Number(it.discount || 0);
         const qty = Number(it.quantity || 0);
-        const final_price = +(price * (1 - discount / 100)).toFixed(2);
-        const line_total = +(final_price * qty).toFixed(2);
+
+        const final_price = money2(price * (1 - discount / 100));
+        const line_total = money2(final_price * qty);
+
         return {
             id: it.id ?? null,
             name: it.name ?? "",
-            price,
-            discount,
+            price: money2(price),
+            discount: money2(discount),
             final_price,
             quantity: qty,
             line_total,
         };
     });
 
-    const subtotal = +norm.reduce((s, r) => s + r.price * r.quantity, 0).toFixed(2);
-    const total    = +norm.reduce((s, r) => s + r.line_total, 0).toFixed(2);
-    const discount = +(subtotal - total).toFixed(2);
+    const subtotal = money2(norm.reduce((s, r) => s + r.price * r.quantity, 0));      // без скидок
+    const itemsTotal = money2(norm.reduce((s, r) => s + r.line_total, 0));            // со скидками
+    const discount = money2(subtotal - itemsTotal);
 
     return {
         items: norm,
         amount_subtotal: subtotal,
         amount_discount: discount,
-        amount_total: total,
+        amount_items_total: itemsTotal, // new field for total of items without delivery
+        amount_total: itemsTotal,       // пока без доставки 
     };
 }
+
 
 function rowToPanelDto(r) {
     const addr = [
@@ -78,6 +89,7 @@ function rowToPanelDto(r) {
         updatedAt: r.updated_at,
         scheduledAt: r.scheduled_at,
         amountTotal: Number(r.amount_total),
+        deliveryFee: Number(r.delivery_fee || 0),
         paymentMethod: r.payment_method,       // 'cash' | 'card' | 'wire'
         customer: r.customer_name,
         phone: r.customer_phone,
@@ -202,12 +214,12 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             dto.notes = r.notes;
 
             // раздельные поля адреса (для формы)
-            dto.addressStreet    = r.address_street;
-            dto.addressHouse     = r.address_house;
-            dto.addressBuilding  = r.address_building;
+            dto.addressStreet = r.address_street;
+            dto.addressHouse = r.address_house;
+            dto.addressBuilding = r.address_building;
             dto.addressApartment = r.address_apartment;
-            dto.addressFloor     = r.address_floor;
-            dto.addressCode      = r.address_code;
+            dto.addressFloor = r.address_floor;
+            dto.addressCode = r.address_code;
 
             res.json({ ok: true, item: dto });
         } catch (e) {
@@ -225,17 +237,27 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const { companyId, user } = ctx;
             const b = req.body || {};
 
-            const {
-                items,
-                amount_subtotal,
-                amount_discount,
-                amount_total,
-            } = normalizeItemsAndAmounts(b.selectedItems || []);
-
+            // ---- validate base fields ----
             if (!b.customer || !b.phone)
                 return res.status(400).json({ ok: false, error: "Имя и телефон обязательны" });
             if (!b.payment)
                 return res.status(400).json({ ok: false, error: "Способ оплаты обязателен" });
+
+            // ---- delivery fee ----
+            const delivery_fee = money2(b.deliveryFee ?? 0);
+            if (delivery_fee < 0) {
+                return res.status(400).json({ ok: false, error: "Плата за доставку не может быть отрицательной" });
+            }
+
+            // ---- items & amounts (server is source of truth) ----
+            const norm = normalizeItemsAndAmounts(b.selectedItems || []);
+            const { items, amount_subtotal, amount_discount } = norm;
+
+            // сумма товаров со скидкой (из твоего normalize это amount_total)
+            const amount_items_total = money2(norm.amount_items_total ?? norm.amount_total ?? 0);
+
+            // итог = товары + доставка
+            const amount_total = money2(amount_items_total + delivery_fee);
 
             const orderNo = b.orderNo || `CO-${Date.now().toString().slice(-8)}`;
             const payment_method = coercePaymentMethod(b.payment);
@@ -259,28 +281,28 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
                     const [ins] = await conn.query(
                         `INSERT INTO current_orders
-             (company_id, order_no, order_seq, order_seq_date,
-              order_type, status, scheduled_at,
-              courier_unit_id, pickup_unit_id, dispatcher_unit_id,
-              payment_method,
-              customer_name, customer_phone,
-              address_street, address_house, address_building, address_apartment, address_floor, address_code,
-              notes,
-              items_json, amount_subtotal, amount_discount, amount_total)
-             VALUES
-             (?, ?, ?, ?,
-              ?, ?, ?,
-              ?, ?, ?,
-              ?,
-              ?, ?,
-              ?, ?, ?, ?, ?, ?,
-              ?,
-              ?, ?, ?, ?)`,
+           (company_id, order_no, order_seq, order_seq_date,
+            order_type, status, scheduled_at,
+            courier_unit_id, pickup_unit_id, dispatcher_unit_id,
+            payment_method, delivery_fee,
+            customer_name, customer_phone,
+            address_street, address_house, address_building, address_apartment, address_floor, address_code,
+            notes,
+            items_json, amount_subtotal, amount_discount, amount_total)
+           VALUES
+           (?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?, ?,
+            ?, ?,
+            ?, ?,
+            ?, ?, ?, ?, ?, ?,
+            ?,
+            ?, ?, ?, ?)`,
                         [
                             companyId, orderNo, nextSeq, order_seq_date,
                             order_type, b.status || "new", scheduled_at,
                             b.courierId || null, b.pickupId || null, (user && user.unitId) || null,
-                            payment_method,
+                            payment_method, delivery_fee,
                             b.customer, b.phone,
                             b.street || null, b.house || null, b.building || null, b.apart || null, b.floor || null, b.code || null,
                             b.notes || null,
@@ -336,32 +358,49 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
     });
 
     // PUT /api/current-orders/:id
+
+    // PUT /api/current-orders/:id
     router.put("/:id", async (req, res) => {
         try {
             const ctx = await resolveCompanyContext(req, res);
             if (!ctx) return;
             const { companyId } = ctx;
+
             const id = Number(req.params.id);
+            if (!Number.isFinite(id) || id <= 0) {
+                return res.status(400).json({ ok: false, error: "Некорректный id заказа" });
+            }
+
             const b = req.body || {};
 
-            const {
-                items,
-                amount_subtotal,
-                amount_discount,
-                amount_total,
-            } = normalizeItemsAndAmounts(b.selectedItems || []);
+            // ---- delivery fee ----
+            const delivery_fee = money2(b.deliveryFee ?? 0);
+            if (delivery_fee < 0) {
+                return res.status(400).json({ ok: false, error: "Плата за доставку не может быть отрицательной" });
+            }
+
+            // ---- items & amounts (server is source of truth) ----
+            const norm = normalizeItemsAndAmounts(b.selectedItems || []);
+            const { items, amount_subtotal, amount_discount } = norm;
+
+            // сумма товаров со скидкой
+            const amount_items_total = money2(norm.amount_items_total ?? norm.amount_total ?? 0);
+
+            // итог = товары + доставка
+            const amount_total = money2(amount_items_total + delivery_fee);
 
             const payment_method = coercePaymentMethod(b.payment);
 
             await pool.query(
                 `UPDATE current_orders
-                 SET order_type=?, status=?, scheduled_at=?,
-                     courier_unit_id=?, pickup_unit_id=?,
-                     payment_method=?,
-                     customer_name=?, customer_phone=?,
-                     address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?,
-                     notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW()
-                 WHERE company_id=? AND order_id=?`,
+       SET order_type=?, status=?, scheduled_at=?,
+           courier_unit_id=?, pickup_unit_id=?,
+           payment_method=?,
+           delivery_fee=?,
+           customer_name=?, customer_phone=?,
+           address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?,
+           notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW()
+       WHERE company_id=? AND order_id=?`,
                 [
                     b.orderType || "active",
                     b.status || "new",
@@ -369,6 +408,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     b.courierId || null,
                     b.pickupId || null,
                     payment_method,
+                    delivery_fee,
                     b.customer,
                     b.phone,
                     b.street || null,
@@ -389,16 +429,18 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const [rows] = await pool.query(
                 `SELECT co.*,
-                        cu1.unit_nickname AS courier_nickname,
-                        cu2.unit_nickname AS pickup_nickname
-                 FROM current_orders co
-                          LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-                          LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-                 WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
+              cu1.unit_nickname AS courier_nickname,
+              cu2.unit_nickname AS pickup_nickname
+       FROM current_orders co
+       LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+       LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+       WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, id]
             );
-            if (!rows.length)
+
+            if (!rows.length) {
                 return res.status(404).json({ ok: false, error: "Заказ не найден" });
+            }
 
             const item = rowToPanelDto(rows[0]);
             res.json({ ok: true, item });
@@ -411,6 +453,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             res.status(500).json({ ok: false, error: "Ошибка сервера" });
         }
     });
+
 
     // PATCH /api/current-orders/:id/status  {status:'ready'|'enroute'|...}
     router.patch("/:id/status", async (req, res) => {
