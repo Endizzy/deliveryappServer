@@ -27,10 +27,11 @@ export async function resolveCompanyContext(req, res) {
     return { companyId: Number(companyId), user: req.user };
 }
 
-function normalizeItemsAndAmounts(items) {
+function normalizeItemsAndAmounts(items, deliveryFee) {
     const toCents = (amount) => {
-        const n = Number(amount);
-        if (!Number.isFinite(n)) return 0;
+        const s = typeof amount === "string" ? amount.trim().replace(",", ".") : amount;
+        const n = Number(s);
+        if (!Number.isFinite(n) || n < 0) return 0;
         return Math.round((n + Number.EPSILON) * 100);
     };
 
@@ -67,8 +68,10 @@ function normalizeItemsAndAmounts(items) {
     });
 
     const subtotalCents = norm.reduce((s, r) => s + r._price_cents * r.quantity, 0);
-    const totalCents = norm.reduce((s, r) => s + r._line_cents, 0);
-    const discountCents = subtotalCents - totalCents;
+    const itemsTotalCents = norm.reduce((s, r) => s + r._line_cents, 0);
+    const discountCents = subtotalCents - itemsTotalCents;
+    const deliveryFeeCents = toCents(deliveryFee);
+    const totalCents = itemsTotalCents + deliveryFeeCents;
 
     // не сохраняем служебные поля в items_json
     const itemsClean = norm.map(({ _price_cents, _line_cents, ...rest }) => rest);
@@ -78,6 +81,7 @@ function normalizeItemsAndAmounts(items) {
         amount_subtotal: formatCents(subtotalCents),
         amount_discount: formatCents(discountCents),
         amount_total: formatCents(totalCents),
+        delivery_fee: formatCents(deliveryFeeCents),
     };
 }
 
@@ -102,6 +106,7 @@ function rowToPanelDto(r) {
         updatedAt: r.updated_at,
         scheduledAt: r.scheduled_at,
         amountTotal: Number(r.amount_total),
+        deliveryFee: Number(r.delivery_fee || 0),
         paymentMethod: r.payment_method,       // 'cash' | 'card' | 'wire'
         customer: r.customer_name,
         phone: r.customer_phone,
@@ -254,7 +259,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 amount_subtotal,
                 amount_discount,
                 amount_total,
-            } = normalizeItemsAndAmounts(b.selectedItems || []);
+                delivery_fee,
+            } = normalizeItemsAndAmounts(b.selectedItems || [], b.deliveryFee);
 
             if (!b.customer || !b.phone)
                 return res.status(400).json({ ok: false, error: "Имя и телефон обязательны" });
@@ -287,6 +293,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
               order_type, status, scheduled_at,
               courier_unit_id, pickup_unit_id, dispatcher_unit_id,
               payment_method,
+              delivery_fee,
               customer_name, customer_phone,
               address_street, address_house, address_building, address_apartment, address_floor, address_code,
               notes,
@@ -295,6 +302,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
              (?, ?, ?, ?,
               ?, ?, ?,
               ?, ?, ?,
+              ?,
               ?,
               ?, ?,
               ?, ?, ?, ?, ?, ?,
@@ -305,6 +313,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                             order_type, b.status || "new", scheduled_at,
                             b.courierId || null, b.pickupId || null, (user && user.unitId) || null,
                             payment_method,
+                            delivery_fee,
                             b.customer, b.phone,
                             b.street || null, b.house || null, b.building || null, b.apart || null, b.floor || null, b.code || null,
                             b.notes || null,
@@ -373,7 +382,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 amount_subtotal,
                 amount_discount,
                 amount_total,
-            } = normalizeItemsAndAmounts(b.selectedItems || []);
+                delivery_fee,
+            } = normalizeItemsAndAmounts(b.selectedItems || [], b.deliveryFee);
 
             const payment_method = coercePaymentMethod(b.payment);
 
@@ -382,6 +392,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                  SET order_type=?, status=?, scheduled_at=?,
                      courier_unit_id=?, pickup_unit_id=?,
                      payment_method=?,
+                     delivery_fee=?,
                      customer_name=?, customer_phone=?,
                      address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?,
                      notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW()
@@ -393,6 +404,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     b.courierId || null,
                     b.pickupId || null,
                     payment_method,
+                    delivery_fee,
                     b.customer,
                     b.phone,
                     b.street || null,

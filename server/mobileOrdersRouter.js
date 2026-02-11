@@ -26,6 +26,7 @@ function rowToMobileOrderDto(r) {
     scheduledAt: r.scheduled_at,
 
     amountTotal: Number(r.amount_total),
+    deliveryFee: Number(r.delivery_fee || 0),
     paymentMethod: r.payment_method,
 
     customer: r.customer_name,
@@ -146,6 +147,7 @@ router.get("/:id", async (req, res) => {
 
     dto.amountSubtotal = Number(r.amount_subtotal);
     dto.amountDiscount = Number(r.amount_discount);
+    dto.deliveryFee = Number(r.delivery_fee || 0);
 
     return res.json({ ok: true, item: dto });
   } catch (e) {
