@@ -4,298 +4,265 @@ import crypto from "crypto";
 
 /** --- helpers --- */
 export async function resolveCompanyContext(req, res) {
-  const u = req.user || {};
-  let companyId = u.companyId ?? u.company_id ?? null;
+    const u = req.user || {};
+    let companyId = u.companyId ?? u.company_id ?? null;
 
-  if (!companyId) {
-    const userId = u.userId ?? u.id ?? null;
-    if (!userId) {
-      res.status(400).json({ ok: false, error: "Не удалось определить пользователя" });
-      return null;
+    if (!companyId) {
+        const userId = u.userId ?? u.id ?? null;
+        if (!userId) {
+            res.status(400).json({ ok: false, error: "Не удалось определить пользователя" });
+            return null;
+        }
+        const [rows] = await pool.query(
+            "SELECT company_id FROM users WHERE user_id=? LIMIT 1",
+            [userId]
+        );
+        if (!rows.length) {
+            res.status(404).json({ ok: false, error: "Пользователь не найден" });
+            return null;
+        }
+        companyId = rows[0].company_id;
+        req.user = { ...u, companyId };
     }
-    const [rows] = await pool.query("SELECT company_id FROM users WHERE user_id=? LIMIT 1", [userId]);
-    if (!rows.length) {
-      res.status(404).json({ ok: false, error: "Пользователь не найден" });
-      return null;
-    }
-    companyId = rows[0].company_id;
-    req.user = { ...u, companyId };
-  }
-  return { companyId: Number(companyId), user: req.user };
-}
-
-/**
- * Денежный парсер БЕЗ округления:
- * - "2" -> 200
- * - "2.0" -> 200
- * - "2.005" -> 200 (обрезаем до 2 знаков, НЕ округляем)
- * - "10,25" -> 1025
- */
-function moneyToCentsNoRound(v) {
-  if (v == null) return 0;
-  const s0 = String(v).trim();
-  if (!s0) return 0;
-
-  const s = s0.replace(",", ".");
-  const m = s.match(/^(-)?(\d+)(?:\.(\d+))?$/);
-  if (!m) return 0;
-
-  const sign = m[1] ? -1 : 1;
-  const whole = parseInt(m[2], 10) || 0;
-
-  // берём ТОЛЬКО первые 2 знака дроби, остальное отбрасываем
-  const fracRaw = (m[3] || "");
-  const frac2 = (fracRaw + "00").slice(0, 2);
-  const frac = parseInt(frac2, 10) || 0;
-
-  return sign * (whole * 100 + frac);
-}
-
-function centsToMoney(cents) {
-  // cents - целое число
-  return Number((cents / 100).toFixed(2));
+    return { companyId: Number(companyId), user: req.user };
 }
 
 function normalizeItemsAndAmounts(items) {
-  // оставляем твою старую (рабочую) логику расчёта товаров
-  const norm = (Array.isArray(items) ? items : []).map((it) => {
-    const price = Number(it.price || 0);
-    const discount = Number(it.discount || 0);
-    const qty = Number(it.quantity || 0);
+    const norm = (Array.isArray(items) ? items : []).map((it) => {
+        const price = Number(it.price || 0);
+        const discount = Number(it.discount || 0);
+        const qty = Number(it.quantity || 0);
+        const final_price = +(price * (1 - discount / 100)).toFixed(2);
+        const line_total = +(final_price * qty).toFixed(2);
+        return {
+            id: it.id ?? null,
+            name: it.name ?? "",
+            price,
+            discount,
+            final_price,
+            quantity: qty,
+            line_total,
+        };
+    });
 
-    const final_price = +(price * (1 - discount / 100)).toFixed(2);
-    const line_total = +(final_price * qty).toFixed(2);
+    const subtotal = +norm.reduce((s, r) => s + r.price * r.quantity, 0).toFixed(2);
+    const total    = +norm.reduce((s, r) => s + r.line_total, 0).toFixed(2);
+    const discount = +(subtotal - total).toFixed(2);
 
     return {
-      id: it.id ?? null,
-      name: it.name ?? "",
-      price,
-      discount,
-      final_price,
-      quantity: qty,
-      line_total,
+        items: norm,
+        amount_subtotal: subtotal,
+        amount_discount: discount,
+        amount_total: total,
     };
-  });
-
-  const subtotal = +norm.reduce((s, r) => s + r.price * r.quantity, 0).toFixed(2);
-  const total = +norm.reduce((s, r) => s + r.line_total, 0).toFixed(2);
-  const discount = +(subtotal - total).toFixed(2);
-
-  return {
-    items: norm,
-    amount_subtotal: subtotal,
-    amount_discount: discount,
-    amount_total: total, // это товары со скидками (как раньше)
-  };
 }
 
 function rowToPanelDto(r) {
-  const addr = [
-    r.address_street,
-    r.address_house && `д.${r.address_house}`,
-    r.address_building && `к.${r.address_building}`,
-    r.address_apartment && `кв.${r.address_apartment}`,
-    r.address_floor && `эт.${r.address_floor}`,
-    r.address_code && `код ${r.address_code}`,
-  ]
-    .filter(Boolean)
-    .join(", ");
+    const addr = [
+        r.address_street,
+        r.address_house && `д.${r.address_house}`,
+        r.address_building && `к.${r.address_building}`,
+        r.address_apartment && `кв.${r.address_apartment}`,
+        r.address_floor && `эт.${r.address_floor}`,
+        r.address_code && `код ${r.address_code}`,
+    ].filter(Boolean).join(", ");
 
-  return {
-    id: r.order_id,
-    orderNo: r.order_no,
-    orderSeq: r.order_seq ?? null,
-    orderDay: r.order_seq_date ?? null,
-    orderType: r.order_type,
-    status: r.status,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-    scheduledAt: r.scheduled_at,
-    amountTotal: Number(r.amount_total),
-    deliveryFee: Number(r.delivery_fee || 0),
-    paymentMethod: r.payment_method,
-    customer: r.customer_name,
-    phone: r.customer_phone,
-    address: addr,
-    pickupName: r.pickup_nickname || "",
-    courierName: r.courier_nickname || "",
-    dispatcherUnitId: r.dispatcher_unit_id,
-    pickupId: r.pickup_unit_id,
-    courierId: r.courier_unit_id,
-  };
+    return {
+        id: r.order_id,
+        orderNo: r.order_no,
+        orderSeq: r.order_seq ?? null,
+        orderDay: r.order_seq_date ?? null,
+        orderType: r.order_type,               // 'active' | 'preorder'
+        status: r.status,                      // 'new' | 'ready' | 'enroute' | 'paused' | 'cancelled'
+        createdAt: r.created_at,
+        updatedAt: r.updated_at,
+        scheduledAt: r.scheduled_at,
+        amountTotal: Number(r.amount_total),
+        paymentMethod: r.payment_method,       // 'cash' | 'card' | 'wire'
+        customer: r.customer_name,
+        phone: r.customer_phone,
+        address: addr,
+        pickupName: r.pickup_nickname || "",
+        courierName: r.courier_nickname || "",
+        dispatcherUnitId: r.dispatcher_unit_id,
+        pickupId: r.pickup_unit_id,
+        courierId: r.courier_unit_id,
+    };
 }
 
 function safeParseItemsJSON(v) {
-  try {
-    if (v == null) return [];
-    if (typeof v === "string") return JSON.parse(v);
-    if (Buffer.isBuffer(v)) return JSON.parse(v.toString("utf8"));
-    if (typeof v === "object") return v;
-    return [];
-  } catch {
-    return [];
-  }
+    try {
+        if (v == null) return [];
+        if (typeof v === "string") return JSON.parse(v);
+        if (Buffer.isBuffer(v)) return JSON.parse(v.toString("utf8"));
+        if (typeof v === "object") return v; // mysql2 может уже отдать объект
+        return [];
+    } catch {
+        return [];
+    }
 }
 
 function coercePaymentMethod(val) {
-  const s = String(val || "").trim().toLowerCase();
-  if (["cash", "наличные", "нал"].includes(s)) return "cash";
-  if (["card", "карта", "банковская карта"].includes(s)) return "card";
-  if (["wire", "перечислением", "безнал", "безналичный"].includes(s)) return "wire";
-  return "cash";
+    // приводим к ENUM: 'cash','card','wire'
+    const s = String(val || "").trim().toLowerCase();
+    if (["cash", "наличные", "нал"].includes(s)) return "cash";
+    if (["card", "карта", "банковская карта"].includes(s)) return "card";
+    if (["wire", "перечислением", "безнал", "безналичный"].includes(s)) return "wire";
+    return "cash";
 }
 
+/** Определяем «операционный день» для нумерации */
 export function deriveOrderSeqDate(orderType, scheduledAt) {
-  if (orderType === "preorder" && scheduledAt) {
-    const d = new Date(scheduledAt);
-    return d.toISOString().slice(0, 10);
-  }
-  const now = new Date();
-  return now.toISOString().slice(0, 10);
+    // если предзаказ и есть дата — нумеруем на ту дату; иначе — по текущей дате создания
+    if (orderType === "preorder" && scheduledAt) {
+        const d = new Date(scheduledAt);
+        // YYYY-MM-DD
+        return d.toISOString().slice(0, 10);
+    }
+    const now = new Date();
+    return now.toISOString().slice(0, 10);
 }
 
+/** Транзакционное получение следующего порядкового номера за день */
 export async function allocateDailySeq(conn, companyId, orderSeqDate) {
-  const [rows] = await conn.query(
-    `SELECT COALESCE(MAX(order_seq), 0) AS max_seq
+    const [rows] = await conn.query(
+        `SELECT COALESCE(MAX(order_seq), 0) AS max_seq
        FROM current_orders
       WHERE company_id=? AND order_seq_date=?
       FOR UPDATE`,
-    [companyId, orderSeqDate]
-  );
-  return Number(rows[0]?.max_seq || 0) + 1;
+        [companyId, orderSeqDate]
+    );
+    const next = Number(rows[0]?.max_seq || 0) + 1;
+    return next;
 }
 
+/** --- router factory (инжектим broadcastToAdmins из index.js) --- */
 export function currentOrdersRouter({ broadcastToAdmins }) {
-  const router = express.Router();
+    const router = express.Router();
 
-  // GET /api/current-orders?tab=active|preorders|all
-  router.get("/", async (req, res) => {
-    try {
-      const ctx = await resolveCompanyContext(req, res);
-      if (!ctx) return;
-      const { companyId } = ctx;
-      const tab = (req.query.tab || "active").toLowerCase();
-
-      const where = ["co.company_id=?"];
-      const params = [companyId];
-
-      if (tab === "active") {
-        where.push("co.order_type='active'");
-        where.push("co.status IN ('new','ready','enroute','paused')");
-      } else if (tab === "preorders") {
-        where.push("co.order_type='preorder'");
-      }
-
-      const sql = `
-        SELECT co.*,
-               cu1.unit_nickname AS courier_nickname,
-               cu2.unit_nickname AS pickup_nickname
-        FROM current_orders co
-        LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-        LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-        WHERE ${where.join(" AND ")}
-        ORDER BY co.created_at DESC, co.order_id DESC
-        LIMIT 500`;
-      const [rows] = await pool.query(sql, params);
-
-      res.json({ ok: true, items: rows.map(rowToPanelDto) });
-    } catch (e) {
-      console.error("list current orders", e);
-      res.status(500).json({ ok: false, error: "Ошибка сервера" });
-    }
-  });
-
-  // GET /api/current-orders/:id
-  router.get("/:id", async (req, res) => {
-    try {
-      const ctx = await resolveCompanyContext(req, res);
-      if (!ctx) return;
-      const { companyId } = ctx;
-      const id = Number(req.params.id);
-
-      const sql = `
-        SELECT co.*,
-               cu1.unit_nickname AS courier_nickname,
-               cu2.unit_nickname AS pickup_nickname
-        FROM current_orders co
-        LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-        LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-        WHERE co.company_id=? AND co.order_id=? LIMIT 1`;
-      const [rows] = await pool.query(sql, [companyId, id]);
-      if (!rows.length) return res.status(404).json({ ok: false, error: "Заказ не найден" });
-
-      const r = rows[0];
-      const dto = rowToPanelDto(r);
-      dto.items = safeParseItemsJSON(r.items_json);
-      dto.notes = r.notes;
-
-      dto.addressStreet = r.address_street;
-      dto.addressHouse = r.address_house;
-      dto.addressBuilding = r.address_building;
-      dto.addressApartment = r.address_apartment;
-      dto.addressFloor = r.address_floor;
-      dto.addressCode = r.address_code;
-
-      res.json({ ok: true, item: dto });
-    } catch (e) {
-      console.error("get current order", e);
-      res.status(500).json({ ok: false, error: "Ошибка сервера" });
-    }
-  });
-
-  // POST /api/current-orders
-  router.post("/", async (req, res) => {
-    let conn;
-    try {
-      const ctx = await resolveCompanyContext(req, res);
-      if (!ctx) return;
-      const { companyId, user } = ctx;
-      const b = req.body || {};
-
-      if (!b.customer || !b.phone)
-        return res.status(400).json({ ok: false, error: "Имя и телефон обязательны" });
-      if (!b.payment)
-        return res.status(400).json({ ok: false, error: "Способ оплаты обязателен" });
-
-      // товары (как раньше)
-      const { items, amount_subtotal, amount_discount, amount_total: items_total } =
-        normalizeItemsAndAmounts(b.selectedItems || []);
-
-      // доставка БЕЗ округления вверх
-      const deliveryFeeCents = moneyToCentsNoRound(b.deliveryFee ?? 0);
-      if (deliveryFeeCents < 0) {
-        return res.status(400).json({ ok: false, error: "Плата за доставку не может быть отрицательной" });
-      }
-      const delivery_fee = centsToMoney(deliveryFeeCents);
-
-      // итог = товары + доставка (в центах, без округления)
-      const itemsTotalCents = moneyToCentsNoRound(items_total);
-      const amount_total = centsToMoney(itemsTotalCents + deliveryFeeCents);
-
-      const orderNo = b.orderNo || `CO-${Date.now().toString().slice(-8)}`;
-      const payment_method = coercePaymentMethod(b.payment);
-      const order_type = b.orderType || "active";
-      const scheduled_at = b.scheduledAt || null;
-
-      const order_seq_date = deriveOrderSeqDate(order_type, scheduled_at);
-
-      conn = await pool.getConnection();
-      let attempts = 0;
-      let result;
-
-      while (true) {
-        attempts++;
+    // GET /api/current-orders?tab=active|preorders|all
+    router.get("/", async (req, res) => {
         try {
-          await conn.beginTransaction();
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId } = ctx;
+            const tab = (req.query.tab || "active").toLowerCase();
 
-          const nextSeq = await allocateDailySeq(conn, companyId, order_seq_date);
+            const where = ["co.company_id=?"];
+            const params = [companyId];
 
-          const [ins] = await conn.query(
-            `INSERT INTO current_orders
+            if (tab === "active") {
+                where.push("co.order_type='active'");
+                where.push("co.status IN ('new','ready','enroute','paused')");
+            } else if (tab === "preorders") {
+                where.push("co.order_type='preorder'");
+            }
+
+            const sql = `
+                SELECT co.*,
+                       cu1.unit_nickname AS courier_nickname,
+                       cu2.unit_nickname AS pickup_nickname
+                FROM current_orders co
+                         LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                         LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                WHERE ${where.join(" AND ")}
+                ORDER BY co.created_at DESC, co.order_id DESC
+                    LIMIT 500`;
+            const [rows] = await pool.query(sql, params);
+
+            res.json({ ok: true, items: rows.map(rowToPanelDto) });
+        } catch (e) {
+            console.error("list current orders", e);
+            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+        }
+    });
+
+    // GET /api/current-orders/:id
+    router.get("/:id", async (req, res) => {
+        try {
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId } = ctx;
+            const id = Number(req.params.id);
+
+            const sql = `
+                SELECT co.*,
+                       cu1.unit_nickname AS courier_nickname,
+                       cu2.unit_nickname AS pickup_nickname
+                FROM current_orders co
+                         LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                         LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                WHERE co.company_id=? AND co.order_id=? LIMIT 1`;
+            const [rows] = await pool.query(sql, [companyId, id]);
+            if (!rows.length) return res.status(404).json({ ok: false, error: "Заказ не найден" });
+
+            const r = rows[0];
+            const dto = rowToPanelDto(r);
+            dto.items = safeParseItemsJSON(r.items_json);
+            dto.notes = r.notes;
+
+            // раздельные поля адреса (для формы)
+            dto.addressStreet    = r.address_street;
+            dto.addressHouse     = r.address_house;
+            dto.addressBuilding  = r.address_building;
+            dto.addressApartment = r.address_apartment;
+            dto.addressFloor     = r.address_floor;
+            dto.addressCode      = r.address_code;
+
+            res.json({ ok: true, item: dto });
+        } catch (e) {
+            console.error("get current order", e);
+            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+        }
+    });
+
+    // POST /api/current-orders
+    router.post("/", async (req, res) => {
+        let conn;
+        try {
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId, user } = ctx;
+            const b = req.body || {};
+
+            const {
+                items,
+                amount_subtotal,
+                amount_discount,
+                amount_total,
+            } = normalizeItemsAndAmounts(b.selectedItems || []);
+
+            if (!b.customer || !b.phone)
+                return res.status(400).json({ ok: false, error: "Имя и телефон обязательны" });
+            if (!b.payment)
+                return res.status(400).json({ ok: false, error: "Способ оплаты обязателен" });
+
+            const orderNo = b.orderNo || `CO-${Date.now().toString().slice(-8)}`;
+            const payment_method = coercePaymentMethod(b.payment);
+            const order_type = b.orderType || "active";
+            const scheduled_at = b.scheduledAt || null;
+
+            // определяем «операционный день»
+            const order_seq_date = deriveOrderSeqDate(order_type, scheduled_at);
+
+            conn = await pool.getConnection();
+            let attempts = 0;
+            let result;
+
+            while (true) {
+                attempts++;
+                try {
+                    await conn.beginTransaction();
+
+                    // берём следующий порядковый номер за день под блокировкой
+                    const nextSeq = await allocateDailySeq(conn, companyId, order_seq_date);
+
+                    const [ins] = await conn.query(
+                        `INSERT INTO current_orders
              (company_id, order_no, order_seq, order_seq_date,
               order_type, status, scheduled_at,
               courier_unit_id, pickup_unit_id, dispatcher_unit_id,
-              payment_method, delivery_fee,
+              payment_method,
               customer_name, customer_phone,
               address_street, address_house, address_building, address_apartment, address_floor, address_code,
               notes,
@@ -304,212 +271,189 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
              (?, ?, ?, ?,
               ?, ?, ?,
               ?, ?, ?,
-              ?, ?,
+              ?,
               ?, ?,
               ?, ?, ?, ?, ?, ?,
               ?,
               ?, ?, ?, ?)`,
-            [
-              companyId,
-              orderNo,
-              nextSeq,
-              order_seq_date,
-              order_type,
-              b.status || "new",
-              scheduled_at,
-              b.courierId || null,
-              b.pickupId || null,
-              (user && user.unitId) || null,
-              payment_method,
-              delivery_fee,
-              b.customer,
-              b.phone,
-              b.street || null,
-              b.house || null,
-              b.building || null,
-              b.apart || null,
-              b.floor || null,
-              b.code || null,
-              b.notes || null,
-              JSON.stringify(items),
-              amount_subtotal,
-              amount_discount,
-              amount_total,
-            ]
-          );
+                        [
+                            companyId, orderNo, nextSeq, order_seq_date,
+                            order_type, b.status || "new", scheduled_at,
+                            b.courierId || null, b.pickupId || null, (user && user.unitId) || null,
+                            payment_method,
+                            b.customer, b.phone,
+                            b.street || null, b.house || null, b.building || null, b.apart || null, b.floor || null, b.code || null,
+                            b.notes || null,
+                            JSON.stringify(items), amount_subtotal, amount_discount, amount_total
+                        ]
+                    );
 
-          await conn.commit();
-          result = ins;
-          break;
+                    await conn.commit();
+                    result = ins;
+                    break; // успех
+                } catch (e) {
+                    await conn.rollback();
+                    // гонка: кто-то вставил с этим же номером — повторим
+                    if (e && e.code === "ER_DUP_ENTRY" && attempts < 5) {
+                        await new Promise(r => setTimeout(r, 10 + Math.random() * 40));
+                        continue;
+                    }
+                    throw e;
+                }
+            }
+
+            const order_id = result.insertId;
+
+            const [rows] = await pool.query(
+                `SELECT co.*,
+                        cu1.unit_nickname AS courier_nickname,
+                        cu2.unit_nickname AS pickup_nickname
+                 FROM current_orders co
+                          LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                          LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                 WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
+                [companyId, order_id]
+            );
+
+            const item = rowToPanelDto(rows[0]);
+            res.json({ ok: true, item });
+
+            if (typeof broadcastToAdmins === "function") {
+                broadcastToAdmins({
+                    type: "order_created",
+                    eventId: crypto.randomUUID(),
+                    ts: Date.now(),
+                    companyId,
+                    order: item,
+                });
+            }
         } catch (e) {
-          await conn.rollback();
-          if (e && e.code === "ER_DUP_ENTRY" && attempts < 5) {
-            await new Promise((r) => setTimeout(r, 10 + Math.random() * 40));
-            continue;
-          }
-          throw e;
+            console.error("create current order", e);
+            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+        } finally {
+            if (conn) conn.release();
         }
-      }
+    });
 
-      const order_id = result.insertId;
+    // PUT /api/current-orders/:id
+    router.put("/:id", async (req, res) => {
+        try {
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId } = ctx;
+            const id = Number(req.params.id);
+            const b = req.body || {};
 
-      const [rows] = await pool.query(
-        `SELECT co.*,
-                cu1.unit_nickname AS courier_nickname,
-                cu2.unit_nickname AS pickup_nickname
-         FROM current_orders co
-         LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-         LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-         WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
-        [companyId, order_id]
-      );
+            const {
+                items,
+                amount_subtotal,
+                amount_discount,
+                amount_total,
+            } = normalizeItemsAndAmounts(b.selectedItems || []);
 
-      const item = rowToPanelDto(rows[0]);
-      res.json({ ok: true, item });
+            const payment_method = coercePaymentMethod(b.payment);
 
-      if (typeof broadcastToAdmins === "function") {
-        broadcastToAdmins({
-          type: "order_created",
-          eventId: crypto.randomUUID(),
-          ts: Date.now(),
-          companyId,
-          order: item,
-        });
-      }
-    } catch (e) {
-      console.error("create current order", e);
-      res.status(500).json({ ok: false, error: "Ошибка сервера" });
-    } finally {
-      if (conn) conn.release();
-    }
-  });
+            await pool.query(
+                `UPDATE current_orders
+                 SET order_type=?, status=?, scheduled_at=?,
+                     courier_unit_id=?, pickup_unit_id=?,
+                     payment_method=?,
+                     customer_name=?, customer_phone=?,
+                     address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?,
+                     notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW()
+                 WHERE company_id=? AND order_id=?`,
+                [
+                    b.orderType || "active",
+                    b.status || "new",
+                    b.scheduledAt || null,
+                    b.courierId || null,
+                    b.pickupId || null,
+                    payment_method,
+                    b.customer,
+                    b.phone,
+                    b.street || null,
+                    b.house || null,
+                    b.building || null,
+                    b.apart || null,
+                    b.floor || null,
+                    b.code || null,
+                    b.notes || null,
+                    JSON.stringify(items),
+                    amount_subtotal,
+                    amount_discount,
+                    amount_total,
+                    companyId,
+                    id,
+                ]
+            );
 
-  // PUT /api/current-orders/:id
-  router.put("/:id", async (req, res) => {
-    try {
-      const ctx = await resolveCompanyContext(req, res);
-      if (!ctx) return;
-      const { companyId } = ctx;
-      const id = Number(req.params.id);
-      const b = req.body || {};
+            const [rows] = await pool.query(
+                `SELECT co.*,
+                        cu1.unit_nickname AS courier_nickname,
+                        cu2.unit_nickname AS pickup_nickname
+                 FROM current_orders co
+                          LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                          LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                 WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
+                [companyId, id]
+            );
+            if (!rows.length)
+                return res.status(404).json({ ok: false, error: "Заказ не найден" });
 
-      // товары (как раньше)
-      const { items, amount_subtotal, amount_discount, amount_total: items_total } =
-        normalizeItemsAndAmounts(b.selectedItems || []);
+            const item = rowToPanelDto(rows[0]);
+            res.json({ ok: true, item });
 
-      // доставка БЕЗ округления вверх
-      const deliveryFeeCents = moneyToCentsNoRound(b.deliveryFee ?? 0);
-      if (deliveryFeeCents < 0) {
-        return res.status(400).json({ ok: false, error: "Плата за доставку не может быть отрицательной" });
-      }
-      const delivery_fee = centsToMoney(deliveryFeeCents);
+            if (typeof broadcastToAdmins === "function") {
+                broadcastToAdmins({ type: "order_updated", companyId, order: item });
+            }
+        } catch (e) {
+            console.error("update current order", e);
+            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+        }
+    });
 
-      // итог = товары + доставка (точно)
-      const itemsTotalCents = moneyToCentsNoRound(items_total);
-      const amount_total = centsToMoney(itemsTotalCents + deliveryFeeCents);
+    // PATCH /api/current-orders/:id/status  {status:'ready'|'enroute'|...}
+    router.patch("/:id/status", async (req, res) => {
+        try {
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId } = ctx;
+            const id = Number(req.params.id);
+            const { status } = req.body || {};
+            if (!status)
+                return res.status(400).json({ ok: false, error: "Не указан статус" });
 
-      const payment_method = coercePaymentMethod(b.payment);
+            await pool.query(
+                `UPDATE current_orders SET status=?, updated_at=NOW()
+                 WHERE company_id=? AND order_id=?`,
+                [status, companyId, id]
+            );
 
-      await pool.query(
-        `UPDATE current_orders
-         SET order_type=?, status=?, scheduled_at=?,
-             courier_unit_id=?, pickup_unit_id=?,
-             payment_method=?,
-             delivery_fee=?,
-             customer_name=?, customer_phone=?,
-             address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?,
-             notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW()
-         WHERE company_id=? AND order_id=?`,
-        [
-          b.orderType || "active",
-          b.status || "new",
-          b.scheduledAt || null,
-          b.courierId || null,
-          b.pickupId || null,
-          payment_method,
-          delivery_fee,
-          b.customer,
-          b.phone,
-          b.street || null,
-          b.house || null,
-          b.building || null,
-          b.apart || null,
-          b.floor || null,
-          b.code || null,
-          b.notes || null,
-          JSON.stringify(items),
-          amount_subtotal,
-          amount_discount,
-          amount_total,
-          companyId,
-          id,
-        ]
-      );
+            const [rows] = await pool.query(
+                `SELECT co.*,
+                        cu1.unit_nickname AS courier_nickname,
+                        cu2.unit_nickname AS pickup_nickname
+                 FROM current_orders co
+                          LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
+                          LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                 WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
+                [companyId, id]
+            );
+            if (!rows.length) return res.json({ ok: true });
 
-      const [rows] = await pool.query(
-        `SELECT co.*,
-                cu1.unit_nickname AS courier_nickname,
-                cu2.unit_nickname AS pickup_nickname
-         FROM current_orders co
-         LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-         LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-         WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
-        [companyId, id]
-      );
-      if (!rows.length) return res.status(404).json({ ok: false, error: "Заказ не найден" });
+            const item = rowToPanelDto(rows[0]);
+            res.json({ ok: true });
 
-      const item = rowToPanelDto(rows[0]);
-      res.json({ ok: true, item });
+            if (typeof broadcastToAdmins === "function") {
+                broadcastToAdmins({ type: "order_updated", companyId, order: item });
+            }
+        } catch (e) {
+            console.error("patch status current order", e);
+            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+        }
+    });
 
-      if (typeof broadcastToAdmins === "function") {
-        broadcastToAdmins({ type: "order_updated", companyId, order: item });
-      }
-    } catch (e) {
-      console.error("update current order", e);
-      res.status(500).json({ ok: false, error: "Ошибка сервера" });
-    }
-  });
-
-  // PATCH /api/current-orders/:id/status
-  router.patch("/:id/status", async (req, res) => {
-    try {
-      const ctx = await resolveCompanyContext(req, res);
-      if (!ctx) return;
-      const { companyId } = ctx;
-      const id = Number(req.params.id);
-      const { status } = req.body || {};
-      if (!status) return res.status(400).json({ ok: false, error: "Не указан статус" });
-
-      await pool.query(
-        `UPDATE current_orders SET status=?, updated_at=NOW()
-         WHERE company_id=? AND order_id=?`,
-        [status, companyId, id]
-      );
-
-      const [rows] = await pool.query(
-        `SELECT co.*,
-                cu1.unit_nickname AS courier_nickname,
-                cu2.unit_nickname AS pickup_nickname
-         FROM current_orders co
-         LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-         LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-         WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
-        [companyId, id]
-      );
-      if (!rows.length) return res.json({ ok: true });
-
-      res.json({ ok: true });
-
-      if (typeof broadcastToAdmins === "function") {
-        broadcastToAdmins({ type: "order_updated", companyId, order: rowToPanelDto(rows[0]) });
-      }
-    } catch (e) {
-      console.error("patch status current order", e);
-      res.status(500).json({ ok: false, error: "Ошибка сервера" });
-    }
-  });
-
-  return router;
+    return router;
 }
 
 export default currentOrdersRouter;
