@@ -28,32 +28,56 @@ export async function resolveCompanyContext(req, res) {
 }
 
 function normalizeItemsAndAmounts(items) {
+    const toCents = (amount) => {
+        const n = Number(amount);
+        if (!Number.isFinite(n)) return 0;
+        return Math.round((n + Number.EPSILON) * 100);
+    };
+
+    const formatCents = (cents) => (Math.round(Number(cents) || 0) / 100).toFixed(2);
+
+    const discountedUnitCents = (price, discountPercent = 0) => {
+        const priceCents = toCents(price);
+        const d = Number(discountPercent) || 0;
+        if (d <= 0) return priceCents;
+        if (d >= 100) return 0;
+        return Math.round((priceCents * (100 - d)) / 100);
+    };
+
     const norm = (Array.isArray(items) ? items : []).map((it) => {
         const price = Number(it.price || 0);
         const discount = Number(it.discount || 0);
         const qty = Number(it.quantity || 0);
-        const final_price = +(price * (1 - discount / 100)).toFixed(2);
-        const line_total = +(final_price * qty).toFixed(2);
+
+        const priceCents = toCents(price);
+        const unitCents = discountedUnitCents(price, discount);
+        const lineCents = unitCents * qty;
+
         return {
             id: it.id ?? null,
             name: it.name ?? "",
             price,
             discount,
-            final_price,
+            final_price: Number(formatCents(unitCents)),
             quantity: qty,
-            line_total,
+            line_total: Number(formatCents(lineCents)),
+            _price_cents: priceCents,
+            _line_cents: lineCents,
         };
     });
 
-    const subtotal = +norm.reduce((s, r) => s + r.price * r.quantity, 0).toFixed(2);
-    const total    = +norm.reduce((s, r) => s + r.line_total, 0).toFixed(2);
-    const discount = +(subtotal - total).toFixed(2);
+    const subtotalCents = norm.reduce((s, r) => s + r._price_cents * r.quantity, 0);
+    const totalCents = norm.reduce((s, r) => s + r._line_cents, 0);
+    const discountCents = subtotalCents - totalCents;
+
+    // не сохраняем служебные поля в items_json
+    const itemsClean = norm.map(({ _price_cents, _line_cents, ...rest }) => rest);
 
     return {
-        items: norm,
-        amount_subtotal: subtotal,
-        amount_discount: discount,
-        amount_total: total,
+        items: itemsClean,
+        amount_subtotal: formatCents(subtotalCents),
+        amount_discount: formatCents(discountCents),
+        amount_total: formatCents(totalCents),
     };
 }
 

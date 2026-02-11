@@ -3,6 +3,27 @@ import pool from "./db.js";
 
 const router = Router();
 
+function parseMoneyToCents(value) {
+    if (value == null) return { ok: false, error: "Некорректная цена" };
+    const s = typeof value === "string" ? value.trim().replace(",", ".") : value;
+    const n = Number(s);
+    if (!Number.isFinite(n) || n < 0) return { ok: false, error: "Некорректная цена" };
+    const cents = Math.round((n + Number.EPSILON) * 100);
+    return { ok: true, cents };
+}
+
+function centsToMoneyString(cents) {
+    return (Math.round(Number(cents) || 0) / 100).toFixed(2);
+}
+
+function parsePercent(value) {
+    if (value == null || value === "") return { ok: true, value: 0 };
+    const s = typeof value === "string" ? value.trim().replace(",", ".") : value;
+    const n = Number(s);
+    if (!Number.isFinite(n) || n < 0 || n > 100) return { ok: false, error: "Скидка 0..100" };
+    return { ok: true, value: Math.round((n + Number.EPSILON) * 100) / 100 };
+}
+
 /** Хелпер: получить company_id текущего пользователя по user_id из JWT */
 async function requireCompanyId(userId) {
     const [rows] = await pool.query(
@@ -90,10 +111,13 @@ router.post("/", async (req, res) => {
         if (!name || typeof price === "undefined" || price === "")
             return res.status(400).json({ error: "name и price обязательны" });
 
-        const p = Number(price);
-        const d = Number(discount);
-        if (Number.isNaN(p) || p < 0) return res.status(400).json({ error: "Некорректная цена" });
-        if (Number.isNaN(d) || d < 0 || d > 100) return res.status(400).json({ error: "Скидка 0..100" });
+        const pm = parseMoneyToCents(price);
+        if (!pm.ok) return res.status(400).json({ error: pm.error });
+        const pd = parsePercent(discount);
+        if (!pd.ok) return res.status(400).json({ error: pd.error });
+
+        const p = centsToMoneyString(pm.cents);
+        const d = pd.value;
 
         const [result] = await pool.query(
             `INSERT INTO menu
@@ -135,14 +159,14 @@ router.put("/:id", async (req, res) => {
         if (typeof name !== "undefined") { sets.push("item_name = ?"); params.push(name); }
         if (typeof category !== "undefined") { sets.push("item_category = ?"); params.push(category || null); }
         if (typeof price !== "undefined") {
-            const p = Number(price);
-            if (Number.isNaN(p) || p < 0) return res.status(400).json({ error: "Некорректная цена" });
-            sets.push("item_price = ?"); params.push(p);
+            const pm = parseMoneyToCents(price);
+            if (!pm.ok) return res.status(400).json({ error: pm.error });
+            sets.push("item_price = ?"); params.push(centsToMoneyString(pm.cents));
         }
         if (typeof discount !== "undefined") {
-            const d = Number(discount);
-            if (Number.isNaN(d) || d < 0 || d > 100) return res.status(400).json({ error: "Скидка 0..100" });
-            sets.push("item_discount_percent = ?"); params.push(d);
+            const pd = parsePercent(discount);
+            if (!pd.ok) return res.status(400).json({ error: pd.error });
+            sets.push("item_discount_percent = ?"); params.push(pd.value);
         }
         if (typeof available !== "undefined") { sets.push("is_active = ?"); params.push(available ? 1 : 0); }
 
