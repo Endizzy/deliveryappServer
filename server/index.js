@@ -160,6 +160,15 @@ app.post('/api/location', (req, res) => {
         courierNickname: nickname,
     };
 
+    // If courier explicitly signalled end of shift, remove from state and notify admins to remove marker
+    if (payload.status === 'off_shift') {
+        try {
+            state.delete(String(courierId));
+        } catch (e) {}
+        broadcastToAdmins({ type: 'remove', courierId: String(courierId) });
+        return res.json({ ok: true });
+    }
+
     state.set(String(courierId), { ...payload, type: undefined });
     broadcastToAdmins(payload);
     res.json({ ok: true });
@@ -266,6 +275,13 @@ wss.on('connection', (ws) => {
                 timestamp: timestamp || new Date().toISOString(),
                 courierNickname: unitsMeta.get(String(courierId)) ?? null,
             };
+
+            // If courier signalled end of shift over WS, remove and notify admins
+            if (payload.status === 'off_shift') {
+                try { state.delete(String(courierId)); } catch (e) {}
+                broadcastToAdmins({ type: 'remove', courierId: String(courierId) });
+                return;
+            }
 
             // Сохраняем состояние (без поля type)
             state.set(String(courierId), { ...payload, type: undefined });
