@@ -170,25 +170,24 @@ export async function allocateDailySeq(conn, companyId, orderSeqDate) {
 
 /** -------------------- GEOAPIFY -------------------- */
 function buildGeoTextFromBody(b) {
-  // минимально: улица + дом + (корпус/квартира)
-  const street = (b.street || "").toString().trim();
-  const house = (b.house || "").toString().trim();
-  const building = (b.building || "").toString().trim();
-  const apart = (b.apart || "").toString().trim();
+  const street = String(b.street || "").trim();
+  const house = String(b.house || "").trim();
+  const building = String(b.building || "").trim();
+  const apart = String(b.apart || "").trim();
 
-  // если нет даже улицы/дома — смысла геокодить нет
-  const parts = [
-    street,
-    house,
-    building ? `k. ${building}` : null,
-    apart ? `apt ${apart}` : null,
-    "Riga",
-    "Latvia",
-  ].filter(Boolean);
+  if (!street) return null;
 
-  const text = parts.join(", ").trim();
-  if (text.length < 5) return null;
-  return text;
+  // Формат: Ozolciema iela 42 k-1
+  const main =
+    house
+      ? `${street} ${house}${building ? ` k-${building}` : ""}`
+      : street;
+
+  const aptPart = apart ? ` dz. ${apart}` : "";
+
+  const text = `${main}${aptPart}, Riga, Latvia`.trim();
+
+  return text.length > 5 ? text : null;
 }
 
 async function geoapifyGeocodeText(text) {
