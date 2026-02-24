@@ -1,23 +1,24 @@
 import fetch from "node-fetch";
 
 export function buildAddressText(order) {
-  const street = (order.address_street || "").trim();
-  const house = (order.address_house || "").trim();
-  const building = (order.address_building || "").trim();
-  const apart = (order.address_apartment || "").trim();
+  const street = String(order.address_street || "").trim();
+  const house = String(order.address_house || "").trim();
+  const building = String(order.address_building || "").trim();
+  const apart = String(order.address_apartment || "").trim();
 
-  // дом + корпус: "2/1"
-  const housePart = building ? `${house}/${building}` : house;
+  // Пример: "Ozolciema iela 32 k-4"
+  const main =
+    street && house
+      ? `${street} ${house}${building ? ` k-${building}` : ""}`
+      : street || "";
 
-  const parts = [
-    street,
-    housePart,
-    apart ? `- ${apart}` : null, // для квартиры можно иначе, но пока так
-    "Riga",
-    "Latvia",
-  ].filter(Boolean);
+  // Квартира (если используешь). Можно заменить на "apt" если тебе так привычнее.
+  const aptPart = apart ? ` dz. ${apart}` : "";
 
-  return parts.join(", ");
+  const text = `${main}${aptPart}, Riga, Latvia`.trim();
+
+  // если street пустая — не шлём мусор
+  return street ? text : "";
 }
 
 export async function geoapifyGeocodeByText(text) {
@@ -25,15 +26,15 @@ export async function geoapifyGeocodeByText(text) {
   if (!apiKey) return { ok: false, error: "GEOAPIFY_KEY missing" };
 
   const url =
-  "https://api.geoapify.com/v1/geocode/search" +
-  `?text=${encodeURIComponent(text)}` +
-  `&filter=countrycode:lv` +      // ✅ фиксируем Латвию
-  `&bias=countrycode:lv` +        // ✅ приоритет Латвии
-  `&format=json&limit=1` +
-  `&apiKey=${encodeURIComponent(apiKey)}`;
+    "https://api.geoapify.com/v1/geocode/search" +
+    `?text=${encodeURIComponent(text)}` +
+    `&filter=countrycode:lv` + // фиксируем Латвию
+    `&bias=countrycode:lv` +   // приоритет Латвии
+    `&format=json&limit=1` +
+    `&apiKey=${encodeURIComponent(apiKey)}`;
 
   const res = await fetch(url, {
-    headers: { "User-Agent": "delivery-admin/1.0 (support@yourdomain.com)" },
+    headers: { "User-Agent": "delivery-admin/1.0" },
   });
 
   if (!res.ok) {
@@ -47,7 +48,9 @@ export async function geoapifyGeocodeByText(text) {
 
   const lat = Number(item.lat);
   const lng = Number(item.lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return { ok: false, error: "Invalid coordinates" };
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { ok: false, error: "Invalid coordinates" };
+  }
 
   return { ok: true, lat, lng, raw: item };
 }
