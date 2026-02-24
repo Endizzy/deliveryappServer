@@ -1,16 +1,21 @@
 import fetch from "node-fetch";
 
 export function buildAddressText(order) {
-  // order: { address_street, address_house, address_building, address_apartment }
-  // Можно дописать city/ country или брать из pickup_point
+  const street = (order.address_street || "").trim();
+  const house = (order.address_house || "").trim();
+  const building = (order.address_building || "").trim();
+  const apart = (order.address_apartment || "").trim();
+
+  // дом + корпус: "2/1"
+  const housePart = building ? `${house}/${building}` : house;
+
   const parts = [
-    order.address_street,
-    order.address_house,
-    order.address_building ? `k. ${order.address_building}` : null,
-    order.address_apartment ? `apt ${order.address_apartment}` : null,
+    street,
+    housePart,
+    apart ? `- ${apart}` : null, // для квартиры можно иначе, но пока так
     "Riga",
     "Latvia",
-  ].filter(Boolean).map(s => String(s).trim()).filter(Boolean);
+  ].filter(Boolean);
 
   return parts.join(", ");
 }
