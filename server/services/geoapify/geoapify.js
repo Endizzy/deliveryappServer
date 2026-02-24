@@ -1,24 +1,26 @@
 import fetch from "node-fetch";
 
 export function buildAddressText(order) {
-  const street = String(order.address_street || "").trim();
-  const house = String(order.address_house || "").trim();
-  const building = String(order.address_building || "").trim();
-  const apart = String(order.address_apartment || "").trim();
+  // поддерживаем оба формата ключей:
+  // - из БД: address_street/address_house/address_building/address_apartment
+  // - из body: street/house/building/apart
+  const street = String(order.address_street ?? order.street ?? "").trim();
+  const house = String(order.address_house ?? order.house ?? "").trim();
+  const building = String(order.address_building ?? order.building ?? "").trim();
+  const apart = String(order.address_apartment ?? order.apart ?? "").trim();
 
-  // Пример: "Ozolciema iela 32 k-4"
+  if (!street) return "";
+
+  // ВАЖНО: корпус берём ТОЛЬКО из поля "building", дом не парсим
   const main =
-    street && house
+    house
       ? `${street} ${house}${building ? ` k-${building}` : ""}`
-      : street || "";
+      : street;
 
-  // Квартира (если используешь). Можно заменить на "apt" если тебе так привычнее.
+  // Квартира (можешь убрать совсем, если не хочешь)
   const aptPart = apart ? ` dz. ${apart}` : "";
 
-  const text = `${main}${aptPart}, Riga, Latvia`.trim();
-
-  // если street пустая — не шлём мусор
-  return street ? text : "";
+  return `${main}${aptPart}, Riga, Latvia`.trim();
 }
 
 export async function geoapifyGeocodeByText(text) {
@@ -28,8 +30,8 @@ export async function geoapifyGeocodeByText(text) {
   const url =
     "https://api.geoapify.com/v1/geocode/search" +
     `?text=${encodeURIComponent(text)}` +
-    `&filter=countrycode:lv` + // фиксируем Латвию
-    `&bias=countrycode:lv` +   // приоритет Латвии
+    `&filter=countrycode:lv` +
+    `&bias=countrycode:lv` +
     `&format=json&limit=1` +
     `&apiKey=${encodeURIComponent(apiKey)}`;
 
