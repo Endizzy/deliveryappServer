@@ -421,7 +421,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
               ?,
               ?, ?,
               ?, ?, ?, ?, ?, ?,
-              ?,
+              ?,?,
               ?, ?, ?, ?)`,
                         [
                             companyId, orderNo, nextSeq, order_seq_date,
