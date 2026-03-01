@@ -107,6 +107,7 @@ function rowToPanelDto(r) {
         scheduledAt: r.scheduled_at,
         amountTotal: Number(r.amount_total),
         deliveryFee: Number(r.delivery_fee || 0),
+        numOfPeople: Number(r.num_of_people || 0),
         paymentMethod: r.payment_method,
         customer: r.customer_name,
         phone: r.customer_phone,
@@ -117,7 +118,7 @@ function rowToPanelDto(r) {
         pickupId: r.pickup_unit_id,
         courierId: r.courier_unit_id,
 
-        // ✅ координаты (для карты/деталей)
+        // координаты (для карты/деталей)
         addressLat: r.address_lat != null ? Number(r.address_lat) : null,
         addressLng: r.address_lng != null ? Number(r.address_lng) : null,
         geocodedAt: r.geocoded_at ?? null,
@@ -258,7 +259,7 @@ function rowToMapDto(r) {
 export function currentOrdersRouter({ broadcastToAdmins }) {
     const router = express.Router();
 
-    // ✅ GET /api/current-orders/map  (для карты: только активные + с координатами)
+    // GET /api/current-orders/map  (для карты: только активные + с координатами)
     router.get("/map", async (req, res) => {
         try {
             const ctx = await resolveCompanyContext(req, res);
@@ -410,7 +411,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
               delivery_fee,
               customer_name, customer_phone,
               address_street, address_house, address_building, address_apartment, address_floor, address_code,
-              notes,
+              people_amount, notes,
               items_json, amount_subtotal, amount_discount, amount_total)
              VALUES
              (?, ?, ?, ?,
@@ -430,7 +431,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                             delivery_fee,
                             b.customer, b.phone,
                             b.street || null, b.house || null, b.building || null, b.apart || null, b.floor || null, b.code || null,
-                            b.notes || null,
+                            b.numOfPeople || null, b.notes || null,
                             JSON.stringify(items), amount_subtotal, amount_discount, amount_total
                         ]
                     );
@@ -523,7 +524,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
              payment_method=?,
              delivery_fee=?,
              customer_name=?, customer_phone=?,
-             address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?,
+             address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?, people_amount=?,
              notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW()
          WHERE company_id=? AND order_id=?`,
                 [
@@ -542,6 +543,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     b.apart || null,
                     b.floor || null,
                     b.code || null,
+                    b.numOfPeople || null,
                     b.notes || null,
                     JSON.stringify(items),
                     amount_subtotal,
