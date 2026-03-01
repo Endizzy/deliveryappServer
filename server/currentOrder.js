@@ -107,7 +107,7 @@ function rowToPanelDto(r) {
         scheduledAt: r.scheduled_at,
         amountTotal: Number(r.amount_total),
         deliveryFee: Number(r.delivery_fee || 0),
-        numOfPeople: Number(r.num_of_people || 0),
+        numOfPeople: Number(r.people_amount || 0),
         paymentMethod: r.payment_method,
         customer: r.customer_name,
         phone: r.customer_phone,
