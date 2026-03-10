@@ -82,12 +82,15 @@ router.get("/", async (req, res) => {
     const where = ["co.company_id=?"];
     const params = [companyId];
 
+    // Exclude cancelled orders for all tabs
+    where.push("co.status != 'cancelled'");
+
     if (tab === "active") {
       // Активные заказы WITHOUT courier_unit_id assigned (only unassigned orders)
       where.push("co.status IN ('new','ready','enroute')");
       where.push("co.courier_unit_id IS NULL");
     } else if (tab === "my") {
-      // Заказы assigned to current courier (all statuses)
+      // Заказы assigned to current courier (all statuses except cancelled)
       if (!courierId) {
         return res.json({ ok: true, items: [] });
       }
