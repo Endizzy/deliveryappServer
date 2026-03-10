@@ -151,6 +151,8 @@ export async function courierlogin(req, res) {
             { expiresIn: "30m" }
         );
 
+        console.log(`[courierlogin] Created token for unit_id=${user.unit_id}, unit_nickname=${user.unit_nickname}`);
+
         return res.json({ ok: true, token });
     } catch (err) {
         console.error("Ошибка логина:", err);
@@ -167,7 +169,8 @@ export function authMiddleware(req, res, next) {
     const token = authHeader.split(" ")[1];
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
-        req.user = decoded; // { userId, role }
+        req.user = decoded; // { userId, role, companyId, ... }
+        console.log(`[authMiddleware] Decoded token:`, decoded);
         next();
     } catch (err) {
         return res.status(401).json({ error: "Невалидный или просроченный токен" });

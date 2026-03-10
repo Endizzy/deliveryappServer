@@ -74,7 +74,10 @@ router.get("/", async (req, res) => {
 
     const { companyId, user } = ctx;
     const tab = (req.query.tab || "active").toLowerCase();
-    const courierId = user.unitId || user.unit_id || null;
+    // For couriers, unit_id is stored in userId field of JWT
+    const courierId = user.unitId || user.unit_id || user.userId || null;
+    
+    console.log(`[mobile-orders] tab=${tab}, courierId=${courierId}, user=`, user);
 
     const where = ["co.company_id=?"];
     const params = [companyId];
@@ -119,7 +122,8 @@ router.get("/:id", async (req, res) => {
 
     const { companyId, user } = ctx;
     const id = Number(req.params.id);
-    const courierId = user.unitId || user.unit_id || null;
+    // For couriers, unit_id is stored in userId field of JWT
+    const courierId = user.unitId || user.unit_id || user.userId || null;
 
     const sql = `
       SELECT co.*, cu2.unit_nickname AS pickup_nickname
@@ -172,7 +176,8 @@ router.patch("/:id/assign", async (req, res) => {
 
     const { companyId, user } = ctx;
     const orderId = Number(req.params.id);
-    const courierId = user.unitId || user.unit_id || null;
+    // For couriers, unit_id is stored in userId field of JWT
+    const courierId = user.unitId || user.unit_id || user.userId || null;
 
     if (!courierId) {
       return res.status(400).json({ ok: false, error: "Не удалось определить ID курьера" });
@@ -217,7 +222,8 @@ router.patch("/:id/release", async (req, res) => {
 
     const { companyId, user } = ctx;
     const orderId = Number(req.params.id);
-    const courierId = user.unitId || user.unit_id || null;
+    // For couriers, unit_id is stored in userId field of JWT
+    const courierId = user.unitId || user.unit_id || user.userId || null;
 
     // Check if order exists and belongs to company
     const [checkRows] = await pool.query(
