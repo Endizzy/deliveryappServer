@@ -451,7 +451,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const order_id = result.insertId;
 
-            // ✅ Геокодинг сразу после создания (best-effort)
+            // Геокодинг сразу после создания (best-effort)
             const geoText = buildGeoTextFromBody(b);
             if (geoText) {
                 try {
@@ -471,7 +471,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 }
             }
 
-            // ✅ читаем уже обновлённый заказ (с координатами)
+            // читаем уже обновлённый заказ (с координатами)
             const [rows] = await pool.query(
                 `SELECT co.*,
                 cu1.unit_nickname AS courier_nickname,

@@ -66,7 +66,7 @@ function safeParseItemsJSON(v) {
 
 const router = express.Router();
 
-// GET /api/mobile-orders?tab=active|all
+// GET /api/mobile-orders?tab=active|all|my
 router.get("/", async (req, res) => {
   try {
     const ctx = await resolveCompanyContext(req, res);
@@ -80,12 +80,20 @@ router.get("/", async (req, res) => {
     const params = [companyId];
 
     if (tab === "active") {
+      // Активные заказы WITHOUT courier_unit_id assigned (only unassigned orders)
       where.push("co.status IN ('new','ready','enroute')");
-    }
-
-    if (courierId) {
+      where.push("co.courier_unit_id IS NULL");
+    } else if (tab === "my") {
+      // Заказы assigned to current courier
+      if (!courierId) {
+        return res.json({ ok: true, items: [] });
+      }
+      where.push("co.status IN ('new','ready','enroute')");
       where.push("co.courier_unit_id=?");
       params.push(courierId);
+    } else if (tab === "all") {
+      // All unassigned orders (same as "active" but without status filter)
+      where.push("co.courier_unit_id IS NULL");
     }
 
     const sql = `
@@ -152,6 +160,92 @@ router.get("/:id", async (req, res) => {
     return res.json({ ok: true, item: dto });
   } catch (e) {
     console.error("mobile order details", e);
+    res.status(500).json({ ok: false, error: "Ошибка сервера" });
+  }
+});
+
+// PATCH /api/mobile-orders/:id/assign
+// Assign order to current courier
+router.patch("/:id/assign", async (req, res) => {
+  try {
+    const ctx = await resolveCompanyContext(req, res);
+    if (!ctx) return;
+
+    const { companyId, user } = ctx;
+    const orderId = Number(req.params.id);
+    const courierId = user.unitId || user.unit_id || null;
+
+    if (!courierId) {
+      return res.status(400).json({ ok: false, error: "Не удалось определить ID курьера" });
+    }
+
+    // Check if order exists and belongs to company
+    const [checkRows] = await pool.query(
+      "SELECT order_id, courier_unit_id FROM current_orders WHERE company_id=? AND order_id=?",
+      [companyId, orderId]
+    );
+
+    if (!checkRows.length) {
+      return res.status(404).json({ ok: false, error: "Заказ не найден" });
+    }
+
+    const order = checkRows[0];
+
+    // Check if order is already assigned to someone else
+    if (order.courier_unit_id && String(order.courier_unit_id) !== String(courierId)) {
+      return res.status(409).json({ ok: false, error: "Заказ уже назначен другому курьеру" });
+    }
+
+    // Assign order to current courier
+    await pool.query(
+      "UPDATE current_orders SET courier_unit_id=? WHERE company_id=? AND order_id=?",
+      [courierId, companyId, orderId]
+    );
+
+    res.json({ ok: true, message: "Заказ успешно принят" });
+  } catch (e) {
+    console.error("assign order error", e);
+    res.status(500).json({ ok: false, error: "Ошибка сервера" });
+  }
+});
+
+// PATCH /api/mobile-orders/:id/release
+// Release order from current courier
+router.patch("/:id/release", async (req, res) => {
+  try {
+    const ctx = await resolveCompanyContext(req, res);
+    if (!ctx) return;
+
+    const { companyId, user } = ctx;
+    const orderId = Number(req.params.id);
+    const courierId = user.unitId || user.unit_id || null;
+
+    // Check if order exists and belongs to company
+    const [checkRows] = await pool.query(
+      "SELECT order_id, courier_unit_id FROM current_orders WHERE company_id=? AND order_id=?",
+      [companyId, orderId]
+    );
+
+    if (!checkRows.length) {
+      return res.status(404).json({ ok: false, error: "Заказ не найден" });
+    }
+
+    const order = checkRows[0];
+
+    // Check if order is assigned to current courier
+    if (!order.courier_unit_id || String(order.courier_unit_id) !== String(courierId)) {
+      return res.status(403).json({ ok: false, error: "Вы не можете отказаться от этого заказа" });
+    }
+
+    // Release order (set courier_unit_id to NULL)
+    await pool.query(
+      "UPDATE current_orders SET courier_unit_id=NULL WHERE company_id=? AND order_id=?",
+      [companyId, orderId]
+    );
+
+    res.json({ ok: true, message: "Заказ успешно отказан" });
+  } catch (e) {
+    console.error("release order error", e);
     res.status(500).json({ ok: false, error: "Ошибка сервера" });
   }
 });
