@@ -84,11 +84,10 @@ router.get("/", async (req, res) => {
       where.push("co.status IN ('new','ready','enroute')");
       where.push("co.courier_unit_id IS NULL");
     } else if (tab === "my") {
-      // Заказы assigned to current courier
+      // Заказы assigned to current courier (all statuses)
       if (!courierId) {
         return res.json({ ok: true, items: [] });
       }
-      where.push("co.status IN ('new','ready','enroute')");
       where.push("co.courier_unit_id=?");
       params.push(courierId);
     } else if (tab === "all") {
