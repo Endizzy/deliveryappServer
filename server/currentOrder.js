@@ -500,11 +500,19 @@ export function currentOrdersRouter({ broadcastToAdmins, broadcastOrderToCourier
 
             // Отправляем событие также курьерам (для мобильного приложения)
             if (typeof broadcastOrderToCouriers === "function") {
+                console.log('[currentOrder POST] 📤 Broadcasting order_created to couriers');
+                console.log('[currentOrder POST] Order:', {
+                    id: item.id,
+                    courierId: item.courierId,
+                    customerName: item.customer,
+                });
                 broadcastOrderToCouriers({
                     type: "order_created",
                     companyId,
                     order: item,
                 });
+            } else {
+                console.log('[currentOrder POST] ⚠️ broadcastOrderToCouriers is not a function');
             }
         } catch (e) {
             console.error("create current order", e);
@@ -587,11 +595,19 @@ export function currentOrdersRouter({ broadcastToAdmins, broadcastOrderToCourier
 
             // Отправляем событие также курьерам (для мобильного приложения)
             if (typeof broadcastOrderToCouriers === "function") {
+                console.log('[currentOrder PUT] 📤 Broadcasting order_updated to couriers');
+                console.log('[currentOrder PUT] Order:', {
+                    id: item.id,
+                    courierId: item.courierId,
+                    customerName: item.customer,
+                });
                 broadcastOrderToCouriers({
                     type: "order_updated",
                     companyId,
                     order: item,
                 });
+            } else {
+                console.log('[currentOrder PUT] ⚠️ broadcastOrderToCouriers is not a function');
             }
         } catch (e) {
             console.error("update current order", e);
