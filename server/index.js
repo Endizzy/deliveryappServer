@@ -17,7 +17,7 @@ import {
     get2FAStatus,
     verifyLogin2FA
 } from './auth.js';
-import mobileOrdersRouter from "./mobileOrdersRouter.js";
+import createMobileOrdersRouter from "./mobileOrdersRouter.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js";
@@ -91,7 +91,7 @@ function broadcastToAdmins(payload) {
 app.use("/api/current-orders", authMiddleware, currentOrdersRouter({ broadcastToAdmins }));
 
 // === MOBILE ORDERS (for couriers) ===
-app.use("/api/mobile-orders", authMiddleware, mobileOrdersRouter);
+app.use("/api/mobile-orders", authMiddleware, createMobileOrdersRouter({ broadcastToAdmins }));
 
 // Поддержка данных для создания заказа
 app.get("/api/order-support/couriers",      authMiddleware, getCouriers);

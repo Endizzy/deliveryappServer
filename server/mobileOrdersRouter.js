@@ -66,6 +66,10 @@ function safeParseItemsJSON(v) {
 
 const router = express.Router();
 
+// Factory function: returns router with broadcastToAdmins injected
+export default function createMobileOrdersRouter({ broadcastToAdmins } = {}) {
+  const router = express.Router();
+
 // GET /api/mobile-orders?tab=active|all|my
 router.get("/", async (req, res) => {
   try {
@@ -209,6 +213,17 @@ router.patch("/:id/assign", async (req, res) => {
       [courierId, companyId, orderId]
     );
 
+    // Broadcast to all admins that order was assigned
+    if (typeof broadcastToAdmins === "function") {
+      broadcastToAdmins({
+        type: "order_assigned",
+        companyId,
+        orderId,
+        courierId: String(courierId),
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     res.json({ ok: true, message: "Заказ успешно принят" });
   } catch (e) {
     console.error("assign order error", e);
@@ -251,6 +266,17 @@ router.patch("/:id/release", async (req, res) => {
       [companyId, orderId]
     );
 
+    // Broadcast to all admins that order was released
+    if (typeof broadcastToAdmins === "function") {
+      broadcastToAdmins({
+        type: "order_released",
+        companyId,
+        orderId,
+        courierId: String(courierId),
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     res.json({ ok: true, message: "Заказ успешно отказан" });
   } catch (e) {
     console.error("release order error", e);
@@ -258,4 +284,5 @@ router.patch("/:id/release", async (req, res) => {
   }
 });
 
-export default router;
+  return router;
+}
