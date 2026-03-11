@@ -126,6 +126,8 @@ function rowToPanelDto(r) {
     };
 }
 
+export { rowToPanelDto };
+
 function safeParseItemsJSON(v) {
     try {
         if (v == null) return [];

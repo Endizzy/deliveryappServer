@@ -1,6 +1,7 @@
 import express from "express";
 import pool from "./db.js";
 import { resolveCompanyContext } from "./currentOrder.js";
+import { rowToPanelDto } from "./currentOrder.js";
 
 function rowToMobileOrderDto(r) {
   // address: без домофона/кода (код уходит отдельно addressCode)
@@ -213,7 +214,31 @@ router.patch("/:id/assign", async (req, res) => {
       [courierId, companyId, orderId]
     );
 
-    // Broadcast to all admins that order was assigned
+    // Fetch updated order with courier info to broadcast to web clients
+    const [updatedRows] = await pool.query(
+      `SELECT co.*, cu2.unit_nickname AS pickup_nickname, cu.unit_nickname AS courier_nickname
+       FROM current_orders co
+       LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+       LEFT JOIN company_units cu ON cu.unit_id = co.courier_unit_id
+       WHERE co.company_id=? AND co.order_id=?
+       LIMIT 1`,
+      [companyId, orderId]
+    );
+
+    if (updatedRows.length > 0) {
+      const updatedOrder = rowToPanelDto(updatedRows[0]);
+      // Broadcast updated order to web admins (for OrderPanel.jsx)
+      if (typeof broadcastToAdmins === "function") {
+        broadcastToAdmins({
+          type: "order_updated",
+          companyId,
+          order: updatedOrder,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
+    // Also send mobile-specific event for courier app
     if (typeof broadcastToAdmins === "function") {
       broadcastToAdmins({
         type: "order_assigned",
@@ -266,7 +291,31 @@ router.patch("/:id/release", async (req, res) => {
       [companyId, orderId]
     );
 
-    // Broadcast to all admins that order was released
+    // Fetch updated order to broadcast to web admins
+    const [updatedRows] = await pool.query(
+      `SELECT co.*, cu2.unit_nickname AS pickup_nickname, cu.unit_nickname AS courier_nickname
+       FROM current_orders co
+       LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+       LEFT JOIN company_units cu ON cu.unit_id = co.courier_unit_id
+       WHERE co.company_id=? AND co.order_id=?
+       LIMIT 1`,
+      [companyId, orderId]
+    );
+
+    if (updatedRows.length > 0) {
+      const updatedOrder = rowToPanelDto(updatedRows[0]);
+      // Broadcast updated order to web admins (for OrderPanel.jsx)
+      if (typeof broadcastToAdmins === "function") {
+        broadcastToAdmins({
+          type: "order_updated",
+          companyId,
+          order: updatedOrder,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+
+    // Also send mobile-specific event for courier app
     if (typeof broadcastToAdmins === "function") {
       broadcastToAdmins({
         type: "order_released",
