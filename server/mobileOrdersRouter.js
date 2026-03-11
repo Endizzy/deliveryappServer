@@ -68,7 +68,7 @@ function safeParseItemsJSON(v) {
 const router = express.Router();
 
 // Factory function: returns router with broadcastToAdmins injected
-export default function createMobileOrdersRouter({ broadcastToAdmins } = {}) {
+export default function createMobileOrdersRouter({ broadcastToAdmins, broadcastOrderToCouriers } = {}) {
   const router = express.Router();
 
 // GET /api/mobile-orders?tab=active|all|my

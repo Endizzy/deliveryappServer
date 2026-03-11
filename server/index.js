@@ -67,7 +67,7 @@ app.post("/api/auth/2fa/verify-login", verifyLogin2FA); // No auth required - us
 
 let wss;
 
-// Функция рассылки с учётом companyId
+// Функция рассылки с учётом companyId (только админам)
 function broadcastToAdmins(payload) {
     const msg = JSON.stringify(payload);
     if (!wss) return;
@@ -86,12 +86,31 @@ function broadcastToAdmins(payload) {
     });
 }
 
+// Функция рассылки событий о заказах курьерам (для мобильного приложения)
+function broadcastOrderToCouriers(payload) {
+    const msg = JSON.stringify(payload);
+    if (!wss) return;
+
+    wss.clients.forEach((ws) => {
+        if (ws.readyState !== ws.OPEN) return;
+        if (ws.clientType !== 'courier') return;
+
+        // Если payload содержит companyId — фильтруем по компании
+        if (typeof payload?.companyId === 'number') {
+            if (ws.companyId === payload.companyId) ws.send(msg);
+        } else {
+            // Иначе шлём всем курьерам
+            ws.send(msg);
+        }
+    });
+}
+
 
 // === CURRENT ORDERS ===
-app.use("/api/current-orders", authMiddleware, currentOrdersRouter({ broadcastToAdmins }));
+app.use("/api/current-orders", authMiddleware, currentOrdersRouter({ broadcastToAdmins, broadcastOrderToCouriers }));
 
 // === MOBILE ORDERS (for couriers) ===
-app.use("/api/mobile-orders", authMiddleware, createMobileOrdersRouter({ broadcastToAdmins }));
+app.use("/api/mobile-orders", authMiddleware, createMobileOrdersRouter({ broadcastToAdmins, broadcastOrderToCouriers }));
 
 // Поддержка данных для создания заказа
 app.get("/api/order-support/couriers",      authMiddleware, getCouriers);

@@ -257,8 +257,8 @@ function rowToMapDto(r) {
     };
 }
 
-/** --- router factory (инжектим broadcastToAdmins из index.js) --- */
-export function currentOrdersRouter({ broadcastToAdmins }) {
+/** --- router factory (инжектим broadcastToAdmins и broadcastOrderToCouriers из index.js) --- */
+export function currentOrdersRouter({ broadcastToAdmins, broadcastOrderToCouriers }) {
     const router = express.Router();
 
     // GET /api/current-orders/map  (для карты: только активные + с координатами)
@@ -497,6 +497,15 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     order: item, // ✅ уже с addressLat/addressLng
                 });
             }
+
+            // Отправляем событие также курьерам (для мобильного приложения)
+            if (typeof broadcastOrderToCouriers === "function") {
+                broadcastOrderToCouriers({
+                    type: "order_created",
+                    companyId,
+                    order: item,
+                });
+            }
         } catch (e) {
             console.error("create current order", e);
             res.status(500).json({ ok: false, error: "Ошибка сервера" });
@@ -574,6 +583,15 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             if (typeof broadcastToAdmins === "function") {
                 broadcastToAdmins({ type: "order_updated", companyId, order: item });
+            }
+
+            // Отправляем событие также курьерам (для мобильного приложения)
+            if (typeof broadcastOrderToCouriers === "function") {
+                broadcastOrderToCouriers({
+                    type: "order_updated",
+                    companyId,
+                    order: item,
+                });
             }
         } catch (e) {
             console.error("update current order", e);
