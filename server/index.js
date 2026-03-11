@@ -17,7 +17,7 @@ import {
     get2FAStatus,
     verifyLogin2FA
 } from './auth.js';
-import createMobileOrdersRouter from "./mobileOrdersRouter.js";
+import mobileOrdersRouter from "./mobileOrdersRouter.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js";
@@ -67,86 +67,31 @@ app.post("/api/auth/2fa/verify-login", verifyLogin2FA); // No auth required - us
 
 let wss;
 
-// Функция рассылки с учётом companyId (только админам)
+// Функция рассылки с учётом companyId
 function broadcastToAdmins(payload) {
     const msg = JSON.stringify(payload);
-    if (!wss) {
-        console.log('[broadcastToAdmins] ⚠️ WSS not initialized');
-        return;
-    }
+    if (!wss) return;
 
-    console.log('[broadcastToAdmins] 📤 Broadcasting event:', payload.type, 'to admins');
-
-    let sentCount = 0;
     wss.clients.forEach((ws) => {
         if (ws.readyState !== ws.OPEN) return;
         if (ws.clientType !== 'admin') return;
 
         // Если payload содержит companyId — фильтруем
         if (typeof payload?.companyId === 'number') {
-            if (ws.companyId === payload.companyId) {
-                console.log('[broadcastToAdmins] ✅ Sending to admin');
-                ws.send(msg);
-                sentCount++;
-            }
+            if (ws.companyId === payload.companyId) ws.send(msg);
         } else {
             // Иначе шлём всем админам
-            console.log('[broadcastToAdmins] ✅ Sending to admin (no filter)');
             ws.send(msg);
-            sentCount++;
         }
     });
-
-    console.log('[broadcastToAdmins] 📊 Sent to', sentCount, 'admin clients');
-}
-
-// Функция рассылки событий о заказах курьерам (для мобильного приложения)
-function broadcastOrderToCouriers(payload) {
-    const msg = JSON.stringify(payload);
-    if (!wss) {
-        console.log('[broadcastOrderToCouriers] ⚠️ WSS not initialized, cannot broadcast');
-        return;
-    }
-
-    console.log('[broadcastOrderToCouriers] 📤 Broadcasting event:', payload.type, 'to couriers');
-    console.log('[broadcastOrderToCouriers] Payload:', payload);
-
-    let sentCount = 0;
-    wss.clients.forEach((ws) => {
-        if (ws.readyState !== ws.OPEN) {
-            console.log('[broadcastOrderToCouriers] Skipped client (not OPEN)');
-            return;
-        }
-        if (ws.clientType !== 'courier') {
-            console.log('[broadcastOrderToCouriers] Skipped client (not courier, is:', ws.clientType, ')');
-            return;
-        }
-
-        // Если payload содержит companyId — фильтруем по компании
-        if (typeof payload?.companyId === 'number') {
-            if (ws.companyId === payload.companyId) {
-                console.log('[broadcastOrderToCouriers] ✅ Sending to courier with companyId:', ws.companyId);
-                ws.send(msg);
-                sentCount++;
-            } else {
-                console.log('[broadcastOrderToCouriers] Skipped courier (wrong companyId. ws:', ws.companyId, 'payload:', payload.companyId, ')');
-            }
-        } else {
-            console.log('[broadcastOrderToCouriers] ✅ Sending to courier (no companyId filter)');
-            ws.send(msg);
-            sentCount++;
-        }
-    });
-    
-    console.log('[broadcastOrderToCouriers] 📊 Sent to', sentCount, 'courier clients');
 }
 
 
 // === CURRENT ORDERS ===
-app.use("/api/current-orders", authMiddleware, currentOrdersRouter({ broadcastToAdmins, broadcastOrderToCouriers }));
+app.use("/api/current-orders", authMiddleware, currentOrdersRouter({ broadcastToAdmins }));
 
 // === MOBILE ORDERS (for couriers) ===
-app.use("/api/mobile-orders", authMiddleware, createMobileOrdersRouter({ broadcastToAdmins, broadcastOrderToCouriers }));
+app.use("/api/mobile-orders", authMiddleware, mobileOrdersRouter);
 
 // Поддержка данных для создания заказа
 app.get("/api/order-support/couriers",      authMiddleware, getCouriers);

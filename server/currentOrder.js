@@ -126,8 +126,6 @@ function rowToPanelDto(r) {
     };
 }
 
-export { rowToPanelDto };
-
 function safeParseItemsJSON(v) {
     try {
         if (v == null) return [];
@@ -257,8 +255,8 @@ function rowToMapDto(r) {
     };
 }
 
-/** --- router factory (инжектим broadcastToAdmins и broadcastOrderToCouriers из index.js) --- */
-export function currentOrdersRouter({ broadcastToAdmins, broadcastOrderToCouriers }) {
+/** --- router factory (инжектим broadcastToAdmins из index.js) --- */
+export function currentOrdersRouter({ broadcastToAdmins }) {
     const router = express.Router();
 
     // GET /api/current-orders/map  (для карты: только активные + с координатами)
@@ -497,23 +495,6 @@ export function currentOrdersRouter({ broadcastToAdmins, broadcastOrderToCourier
                     order: item, // ✅ уже с addressLat/addressLng
                 });
             }
-
-            // Отправляем событие также курьерам (для мобильного приложения)
-            if (typeof broadcastOrderToCouriers === "function") {
-                console.log('[currentOrder POST] 📤 Broadcasting order_created to couriers');
-                console.log('[currentOrder POST] Order:', {
-                    id: item.id,
-                    courierId: item.courierId,
-                    customerName: item.customer,
-                });
-                broadcastOrderToCouriers({
-                    type: "order_created",
-                    companyId,
-                    order: item,
-                });
-            } else {
-                console.log('[currentOrder POST] ⚠️ broadcastOrderToCouriers is not a function');
-            }
         } catch (e) {
             console.error("create current order", e);
             res.status(500).json({ ok: false, error: "Ошибка сервера" });
@@ -591,23 +572,6 @@ export function currentOrdersRouter({ broadcastToAdmins, broadcastOrderToCourier
 
             if (typeof broadcastToAdmins === "function") {
                 broadcastToAdmins({ type: "order_updated", companyId, order: item });
-            }
-
-            // Отправляем событие также курьерам (для мобильного приложения)
-            if (typeof broadcastOrderToCouriers === "function") {
-                console.log('[currentOrder PUT] 📤 Broadcasting order_updated to couriers');
-                console.log('[currentOrder PUT] Order:', {
-                    id: item.id,
-                    courierId: item.courierId,
-                    customerName: item.customer,
-                });
-                broadcastOrderToCouriers({
-                    type: "order_updated",
-                    companyId,
-                    order: item,
-                });
-            } else {
-                console.log('[currentOrder PUT] ⚠️ broadcastOrderToCouriers is not a function');
             }
         } catch (e) {
             console.error("update current order", e);

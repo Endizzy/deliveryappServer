@@ -1,7 +1,6 @@
 import express from "express";
 import pool from "./db.js";
 import { resolveCompanyContext } from "./currentOrder.js";
-import { rowToPanelDto } from "./currentOrder.js";
 
 function rowToMobileOrderDto(r) {
   // address: без домофона/кода (код уходит отдельно addressCode)
@@ -66,10 +65,6 @@ function safeParseItemsJSON(v) {
 }
 
 const router = express.Router();
-
-// Factory function: returns router with broadcastToAdmins injected
-export default function createMobileOrdersRouter({ broadcastToAdmins, broadcastOrderToCouriers } = {}) {
-  const router = express.Router();
 
 // GET /api/mobile-orders?tab=active|all|my
 router.get("/", async (req, res) => {
@@ -214,41 +209,6 @@ router.patch("/:id/assign", async (req, res) => {
       [courierId, companyId, orderId]
     );
 
-    // Fetch updated order with courier info to broadcast to web clients
-    const [updatedRows] = await pool.query(
-      `SELECT co.*, cu2.unit_nickname AS pickup_nickname, cu.unit_nickname AS courier_nickname
-       FROM current_orders co
-       LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-       LEFT JOIN company_units cu ON cu.unit_id = co.courier_unit_id
-       WHERE co.company_id=? AND co.order_id=?
-       LIMIT 1`,
-      [companyId, orderId]
-    );
-
-    if (updatedRows.length > 0) {
-      const updatedOrder = rowToPanelDto(updatedRows[0]);
-      // Broadcast updated order to web admins (for OrderPanel.jsx)
-      if (typeof broadcastToAdmins === "function") {
-        broadcastToAdmins({
-          type: "order_updated",
-          companyId,
-          order: updatedOrder,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    }
-
-    // Also send mobile-specific event for courier app
-    if (typeof broadcastToAdmins === "function") {
-      broadcastToAdmins({
-        type: "order_assigned",
-        companyId,
-        orderId,
-        courierId: String(courierId),
-        timestamp: new Date().toISOString(),
-      });
-    }
-
     res.json({ ok: true, message: "Заказ успешно принят" });
   } catch (e) {
     console.error("assign order error", e);
@@ -291,41 +251,6 @@ router.patch("/:id/release", async (req, res) => {
       [companyId, orderId]
     );
 
-    // Fetch updated order to broadcast to web admins
-    const [updatedRows] = await pool.query(
-      `SELECT co.*, cu2.unit_nickname AS pickup_nickname, cu.unit_nickname AS courier_nickname
-       FROM current_orders co
-       LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-       LEFT JOIN company_units cu ON cu.unit_id = co.courier_unit_id
-       WHERE co.company_id=? AND co.order_id=?
-       LIMIT 1`,
-      [companyId, orderId]
-    );
-
-    if (updatedRows.length > 0) {
-      const updatedOrder = rowToPanelDto(updatedRows[0]);
-      // Broadcast updated order to web admins (for OrderPanel.jsx)
-      if (typeof broadcastToAdmins === "function") {
-        broadcastToAdmins({
-          type: "order_updated",
-          companyId,
-          order: updatedOrder,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    }
-
-    // Also send mobile-specific event for courier app
-    if (typeof broadcastToAdmins === "function") {
-      broadcastToAdmins({
-        type: "order_released",
-        companyId,
-        orderId,
-        courierId: String(courierId),
-        timestamp: new Date().toISOString(),
-      });
-    }
-
     res.json({ ok: true, message: "Заказ успешно отказан" });
   } catch (e) {
     console.error("release order error", e);
@@ -333,5 +258,4 @@ router.patch("/:id/release", async (req, res) => {
   }
 });
 
-  return router;
-}
+export default router;
