@@ -25,11 +25,11 @@ import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js
 import currentOrdersRouter from "./currentOrder.js";
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const PORT = process.env.PORT || 4000;
-const app = express();
+const __dirname  = path.dirname(__filename);
+const PORT       = process.env.PORT || 4000;
+const app        = express();
 
-// --- CORS / static ---
+// ─── CORS / static ───────────────────────────────────────────────────────────
 app.use(
     "/companyLogo",
     express.static(path.join(__dirname, "companyLogo"), {
@@ -47,124 +47,132 @@ app.use(cors({
 app.options("*", cors());
 app.use(express.json());
 
-// Health
+// ─── Health ──────────────────────────────────────────────────────────────────
 app.get('/health', (_, res) => res.send('OK'));
 
-// === AUTH / PROFILE ===
-app.post("/api/auth/register", register);
-app.post("/api/auth/login", login);
-app.post("/api/auth/courierlogin", courierlogin);
-app.get("/api/profile", authMiddleware, (req, res) => {
-    res.json({ ok: true, user: req.user });
-});
+// ─── Auth / Profile ──────────────────────────────────────────────────────────
+app.post("/api/auth/register",         register);
+app.post("/api/auth/login",            login);
+app.post("/api/auth/courierlogin",     courierlogin);
+app.get("/api/profile", authMiddleware, (req, res) => res.json({ ok: true, user: req.user }));
 
-// === 2FA ROUTES ===
-app.post("/api/auth/2fa/setup", authMiddleware, setup2FA);
+// ─── 2FA ─────────────────────────────────────────────────────────────────────
+app.post("/api/auth/2fa/setup",        authMiddleware, setup2FA);
 app.post("/api/auth/2fa/verify-setup", authMiddleware, verifySetup2FA);
-app.post("/api/auth/2fa/disable", authMiddleware, disable2FA);
-app.get("/api/auth/2fa/status", authMiddleware, get2FAStatus);
-app.post("/api/auth/2fa/verify-login", verifyLogin2FA); // No auth required - uses tempToken
+app.post("/api/auth/2fa/disable",      authMiddleware, disable2FA);
+app.get("/api/auth/2fa/status",        authMiddleware, get2FAStatus);
+app.post("/api/auth/2fa/verify-login", verifyLogin2FA);
 
+// ─── WSS объявляем заранее, чтобы broadcast-функции были доступны до регистрации роутов ──
 let wss;
 
-// Функция рассылки с учётом companyId
+// ─────────────────────────────────────────────────────────────────────────────
+// broadcastToAdmins — рассылает только администраторам компании
+// ─────────────────────────────────────────────────────────────────────────────
 function broadcastToAdmins(payload) {
     const msg = JSON.stringify(payload);
     if (!wss) return;
-
     wss.clients.forEach((ws) => {
         if (ws.readyState !== ws.OPEN) return;
         if (ws.clientType !== 'admin') return;
-
-        // Если payload содержит companyId — фильтруем
         if (typeof payload?.companyId === 'number') {
             if (ws.companyId === payload.companyId) ws.send(msg);
         } else {
-            // Иначе шлём всем админам
             ws.send(msg);
         }
     });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// broadcastToCompany — рассылает ВСЕМ клиентам компании (admin + courier)
+// Используется при assign/release заказа, чтобы все видели изменения мгновенно
+// ─────────────────────────────────────────────────────────────────────────────
+function broadcastToCompany(companyId, payload) {
+    const msg = JSON.stringify(payload);
+    if (!wss) return;
+    wss.clients.forEach((ws) => {
+        if (ws.readyState !== ws.OPEN) return;
+        if (typeof companyId === 'number' && ws.companyId === companyId) {
+            ws.send(msg);
+        }
+    });
+}
 
-// === CURRENT ORDERS ===
-app.use("/api/current-orders", authMiddleware, currentOrdersRouter({ broadcastToAdmins }));
+// ─── Current Orders (admin) ──────────────────────────────────────────────────
+// Передаём broadcastToCompany вместо broadcastToAdmins —
+// тогда курьеры тоже получают изменения от администратора
+app.use(
+    "/api/current-orders",
+    authMiddleware,
+    currentOrdersRouter({ broadcastToAdmins: broadcastToCompany })
+);
 
-// === MOBILE ORDERS (for couriers) ===
-app.use("/api/mobile-orders", authMiddleware, mobileOrdersRouter);
+// ─── Mobile Orders (couriers) ────────────────────────────────────────────────
+app.use(
+    "/api/mobile-orders",
+    authMiddleware,
+    mobileOrdersRouter({ broadcastToCompany })
+);
 
-// Поддержка данных для создания заказа
+// ─── Order support ───────────────────────────────────────────────────────────
 app.get("/api/order-support/couriers",      authMiddleware, getCouriers);
 app.get("/api/order-support/pickup-points", authMiddleware, getPickupPoints);
 app.get("/api/order-support/menu",          authMiddleware, searchMenuItems);
 
-// === MENU ===
+// ─── Menu ────────────────────────────────────────────────────────────────────
 app.use("/api/menu", authMiddleware, menuApi);
 
-// === USER ===
-app.get("/api/user/me", authMiddleware, getUser);
-
-// === MINIMAL COMPANY INFO ===
+// ─── User / Company ──────────────────────────────────────────────────────────
+app.get("/api/user/me",    authMiddleware, getUser);
 app.get("/api/company/me", authMiddleware, getCompany);
 
-// === STAFF ===
-app.get("/api/staff",        authMiddleware, listUnits);
-app.post("/api/staff",       authMiddleware, createUnit);
-app.put("/api/staff/:id",    authMiddleware, updateUnit);
-app.delete("/api/staff/:id", authMiddleware, deleteUnit);
+// ─── Staff ───────────────────────────────────────────────────────────────────
+app.get("/api/staff",         authMiddleware, listUnits);
+app.post("/api/staff",        authMiddleware, createUnit);
+app.put("/api/staff/:id",     authMiddleware, updateUnit);
+app.delete("/api/staff/:id",  authMiddleware, deleteUnit);
 
-// === ДЕМО/ЛОКАЦИИ (опционально) ===
-// state stores latest known info per courierId, including courierNickname
-const state = new Map(); // { [courierId]: { lat,lng,speedKmh,timestamp,orderId,status,courierNickname } }
-const orders = new Map(); // демо-заказы
-const unitsMeta = new Map(); // courierId -> courierNickname
+// ─── Demo / Location state ───────────────────────────────────────────────────
+const state    = new Map(); // courierId → { lat,lng,speedKmh,timestamp,orderId,status,courierNickname }
+const orders   = new Map(); // demo-orders
+const unitsMeta = new Map(); // courierId → courierNickname
 let nextOrderId = 1;
 
 function parseJsonSafe(data) {
     try {
-        if (Buffer.isBuffer(data)) {
-            return JSON.parse(data.toString('utf8'));
-        }
-        if (typeof data === 'string') {
-            return JSON.parse(data);
-        }
+        if (Buffer.isBuffer(data)) return JSON.parse(data.toString('utf8'));
+        if (typeof data === 'string') return JSON.parse(data);
         return null;
-    } catch {
-        return null;
-    }
+    } catch { return null; }
 }
 
-
-// REST endpoint: accept location updates (mobile may POST here)
+// REST: принять обновление геолокации от мобильного приложения
 app.post('/api/location', (req, res) => {
     const { courierId, lat, lng, speedKmh, orderId, status, timestamp, courierNickname } = req.body || {};
     if (typeof courierId === 'undefined' || typeof lat !== 'number' || typeof lng !== 'number') {
         return res.status(400).json({ ok: false, error: 'bad payload' });
     }
 
-    // If client provided a nickname in REST body, update unitsMeta
     if (courierNickname) {
-        try { unitsMeta.set(String(courierId), String(courierNickname)); } catch (e) {}
+        try { unitsMeta.set(String(courierId), String(courierNickname)); } catch {}
     }
 
     const nickname = unitsMeta.get(String(courierId)) ?? null;
 
     const payload = {
-        type: 'location',
-        courierId: String(courierId),
-        lat, lng,
-        speedKmh: typeof speedKmh === 'number' ? speedKmh : null,
-        orderId: orderId ?? null,
-        status: status ?? 'unknown',
-        timestamp: timestamp || new Date().toISOString(),
+        type:            'location',
+        courierId:       String(courierId),
+        lat,
+        lng,
+        speedKmh:        typeof speedKmh === 'number' ? speedKmh : null,
+        orderId:         orderId ?? null,
+        status:          status ?? 'unknown',
+        timestamp:       timestamp || new Date().toISOString(),
         courierNickname: nickname,
     };
 
-    // If courier explicitly signalled end of shift, remove from state and notify admins to remove marker
     if (payload.status === 'off_shift') {
-        try {
-            state.delete(String(courierId));
-        } catch (e) {}
+        try { state.delete(String(courierId)); } catch {}
         broadcastToAdmins({ type: 'remove', courierId: String(courierId) });
         return res.json({ ok: true });
     }
@@ -174,74 +182,72 @@ app.post('/api/location', (req, res) => {
     res.json({ ok: true });
 });
 
-// ДЕМО CRUD (оставлено как было)
+// Demo CRUD
 app.get('/api/orders', (_, res) => res.json(Array.from(orders.values())));
+
 app.post('/api/orders', (req, res) => {
     const { title } = req.body;
     if (!title) return res.status(400).json({ error: 'title required' });
     const order = { id: nextOrderId++, title, status: 'new', courierId: null };
     orders.set(order.id, order);
     res.json(order);
-    broadcastToAdmins({ type: 'order_created', order }); // без companyId — уйдёт всем админам (демо)
+    broadcastToAdmins({ type: 'order_created', order });
 });
+
 app.put('/api/orders/:id', (req, res) => {
     const id = Number(req.params.id);
     if (!orders.has(id)) return res.status(404).json({ error: 'not found' });
-    const existing = orders.get(id);
-    const updated = { ...existing, ...req.body, id };
+    const updated = { ...orders.get(id), ...req.body, id };
     orders.set(id, updated);
     res.json(updated);
-    broadcastToAdmins({ type: 'order_updated', order: updated }); // демо
+    broadcastToAdmins({ type: 'order_updated', order: updated });
 });
+
 app.delete('/api/orders/:id', (req, res) => {
     const id = Number(req.params.id);
     if (!orders.has(id)) return res.status(404).json({ error: 'not found' });
     orders.delete(id);
     res.json({ ok: true });
-    broadcastToAdmins({ type: 'order_deleted', orderId: id }); // демо
+    broadcastToAdmins({ type: 'order_deleted', orderId: id });
 });
 
-// === WS ===
+// ─── WebSocket Server ────────────────────────────────────────────────────────
 const server = http.createServer(app);
 wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws) => {
     ws.clientType = 'unknown';
-    ws.companyId = null; // помечаем компанию соединения
-    ws.courierId = null; // опционально: будем сохранять id курьера если он авторизуется
+    ws.companyId  = null;
+    ws.courierId  = null;
 
     ws.on('message', (raw) => {
         const data = parseJsonSafe(raw);
         if (!data) return;
 
+        // ── Hello: регистрация клиента ──────────────────────────────────
         if (data.type === 'hello') {
             ws.clientType = data.role === 'admin' ? 'admin' : 'courier';
-            // клиент может прислать companyId, сохраним на сокете
-            const cid = Number(data.companyId);
+
+            const cid    = Number(data.companyId);
             ws.companyId = Number.isFinite(cid) ? cid : null;
 
-            // если курьер прислал courierId + courierNickname — запомним ник и пометим сокет
             if (ws.clientType === 'courier' && typeof data.courierId !== 'undefined') {
                 ws.courierId = String(data.courierId);
                 if (data.courierNickname) {
-                    try {
-                        unitsMeta.set(String(data.courierId), String(data.courierNickname));
-                    } catch (e) {
-                        // ignore
-                    }
+                    try { unitsMeta.set(String(data.courierId), String(data.courierNickname)); } catch {}
                 }
             }
 
             if (ws.clientType === 'admin') {
-                // snapshot: включаем courierNickname из state (если есть) или из unitsMeta
+                // Снапшот геолокаций курьеров
                 const snapshot = Array.from(state.entries()).map(([courierId, v]) => ({
                     courierId,
-                    lat: v.lat,
-                    lng: v.lng,
-                    speedKmh: v.speedKmh ?? null,
-                    orderId: v.orderId ?? null,
-                    status: v.status ?? 'unknown',
-                    timestamp: v.timestamp ?? new Date().toISOString(),
+                    lat:             v.lat,
+                    lng:             v.lng,
+                    speedKmh:        v.speedKmh  ?? null,
+                    orderId:         v.orderId   ?? null,
+                    status:          v.status    ?? 'unknown',
+                    timestamp:       v.timestamp ?? new Date().toISOString(),
                     courierNickname: v.courierNickname ?? unitsMeta.get(String(courierId)) ?? null,
                 }));
                 ws.send(JSON.stringify({ type: 'snapshot', items: snapshot }));
@@ -250,55 +256,46 @@ wss.on('connection', (ws) => {
             return;
         }
 
-        // Курьер шлёт локацию по WS
+        // ── Локация от курьера по WS ─────────────────────────────────────
         if (data.type === 'location' && ws.clientType !== 'admin') {
             const { courierId, lat, lng, speedKmh, orderId, status, timestamp, courierNickname } = data;
             if (typeof courierId === 'undefined' || typeof lat !== 'number' || typeof lng !== 'number') return;
 
-            // Если в сообщении пришёл nickname — обновим unitsMeta
             if (courierNickname) {
-                try {
-                    unitsMeta.set(String(courierId), String(courierNickname));
-                } catch (e) {
-                    // ignore
-                }
+                try { unitsMeta.set(String(courierId), String(courierNickname)); } catch {}
             }
 
             const payload = {
-                type: 'location',
+                type:            'location',
                 courierId,
                 lat,
                 lng,
-                speedKmh: typeof speedKmh === 'number' ? speedKmh : null,
-                orderId: orderId ?? null,
-                status: status ?? 'unknown',
-                timestamp: timestamp || new Date().toISOString(),
+                speedKmh:        typeof speedKmh === 'number' ? speedKmh : null,
+                orderId:         orderId  ?? null,
+                status:          status   ?? 'unknown',
+                timestamp:       timestamp || new Date().toISOString(),
                 courierNickname: unitsMeta.get(String(courierId)) ?? null,
             };
 
-            // If courier signalled end of shift over WS, remove and notify admins
             if (payload.status === 'off_shift') {
-                try { state.delete(String(courierId)); } catch (e) {}
+                try { state.delete(String(courierId)); } catch {}
                 broadcastToAdmins({ type: 'remove', courierId: String(courierId) });
                 return;
             }
 
-            // Сохраняем состояние (без поля type)
             state.set(String(courierId), { ...payload, type: undefined });
             broadcastToAdmins(payload);
         }
     });
 
-    // по закрытию соединения просто очищаем пометки на ws (не трогаем unitsMeta, т.к. ник может быть полезен позже)
     ws.on('close', () => {
         ws.clientType = 'unknown';
-        ws.companyId = null;
-        ws.courierId = null;
+        ws.companyId  = null;
+        ws.courierId  = null;
     });
 
     ws.on('error', (err) => {
-        // можно логировать, но не ломаем поток
-        console.warn('WS connection error', err && err.message ? err.message : err);
+        console.warn('WS connection error', err?.message ?? err);
     });
 });
 
