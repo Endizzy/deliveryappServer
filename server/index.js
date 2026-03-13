@@ -63,11 +63,12 @@ app.post("/api/auth/2fa/disable",      authMiddleware, disable2FA);
 app.get("/api/auth/2fa/status",        authMiddleware, get2FAStatus);
 app.post("/api/auth/2fa/verify-login", verifyLogin2FA);
 
-// ─── WSS объявляем заранее, чтобы broadcast-функции были доступны до регистрации роутов ──
+// WSS объявляем заранее, чтобы broadcast-функции были доступны до регистрации роутов
 let wss;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// broadcastToAdmins — рассылает только администраторам компании
+// broadcastToAdmins
+// Рассылает ТОЛЬКО администраторам. Используется для геолокации курьеров (карта).
 // ─────────────────────────────────────────────────────────────────────────────
 function broadcastToAdmins(payload) {
     const msg = JSON.stringify(payload);
@@ -84,8 +85,35 @@ function broadcastToAdmins(payload) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// broadcastToCompany — рассылает ВСЕМ клиентам компании (admin + courier)
-// Используется при assign/release заказа, чтобы все видели изменения мгновенно
+// broadcastToAll(payload)                            ← ОДИН аргумент
+// Рассылает ВСЕМ клиентам компании (admin + courier).
+// companyId берётся из payload.companyId.
+//
+// Передаётся в currentOrdersRouter как broadcastToAdmins, потому что
+// currentOrdersRouter вызывает его одним аргументом:
+//   broadcastToAdmins({ type, order, companyId })
+//
+// Это позволяет курьерам получать order_created / order_updated
+// когда администратор создаёт или редактирует заказ через CreateOrder / EditOrder.
+// ─────────────────────────────────────────────────────────────────────────────
+function broadcastToAll(payload) {
+    const msg = JSON.stringify(payload);
+    if (!wss) return;
+    const cid = payload?.companyId;
+    wss.clients.forEach((ws) => {
+        if (ws.readyState !== ws.OPEN) return;
+        if (typeof cid === 'number') {
+            if (ws.companyId === cid) ws.send(msg);
+        } else {
+            ws.send(msg);
+        }
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// broadcastToCompany(companyId, payload)             ← ДВА аргумента
+// Рассылает ВСЕМ клиентам компании (admin + courier).
+// Используется в mobileOrdersRouter при assign/release заказа.
 // ─────────────────────────────────────────────────────────────────────────────
 function broadcastToCompany(companyId, payload) {
     const msg = JSON.stringify(payload);
@@ -99,15 +127,16 @@ function broadcastToCompany(companyId, payload) {
 }
 
 // ─── Current Orders (admin) ──────────────────────────────────────────────────
-// Передаём broadcastToCompany вместо broadcastToAdmins —
-// тогда курьеры тоже получают изменения от администратора
+// broadcastToAll — чтобы курьеры тоже получали order_created / order_updated
+// от действий администратора (CreateOrder.jsx / EditOrder.jsx)
 app.use(
     "/api/current-orders",
     authMiddleware,
-    currentOrdersRouter({ broadcastToAdmins: broadcastToCompany })
+    currentOrdersRouter({ broadcastToAdmins: broadcastToAll })
 );
 
 // ─── Mobile Orders (couriers) ────────────────────────────────────────────────
+// broadcastToCompany — для assign/release (два аргумента: companyId, payload)
 app.use(
     "/api/mobile-orders",
     authMiddleware,
@@ -133,8 +162,8 @@ app.put("/api/staff/:id",     authMiddleware, updateUnit);
 app.delete("/api/staff/:id",  authMiddleware, deleteUnit);
 
 // ─── Demo / Location state ───────────────────────────────────────────────────
-const state    = new Map(); // courierId → { lat,lng,speedKmh,timestamp,orderId,status,courierNickname }
-const orders   = new Map(); // demo-orders
+const state     = new Map(); // courierId → { lat,lng,speedKmh,timestamp,orderId,status,courierNickname }
+const orders    = new Map(); // demo-orders
 const unitsMeta = new Map(); // courierId → courierNickname
 let nextOrderId = 1;
 
@@ -178,7 +207,7 @@ app.post('/api/location', (req, res) => {
     }
 
     state.set(String(courierId), { ...payload, type: undefined });
-    broadcastToAdmins(payload);
+    broadcastToAdmins(payload); // геолокация — только на карту у админов
     res.json({ ok: true });
 });
 
@@ -239,7 +268,7 @@ wss.on('connection', (ws) => {
             }
 
             if (ws.clientType === 'admin') {
-                // Снапшот геолокаций курьеров
+                // Снапшот геолокаций курьеров — только для админов
                 const snapshot = Array.from(state.entries()).map(([courierId, v]) => ({
                     courierId,
                     lat:             v.lat,
@@ -284,7 +313,7 @@ wss.on('connection', (ws) => {
             }
 
             state.set(String(courierId), { ...payload, type: undefined });
-            broadcastToAdmins(payload);
+            broadcastToAdmins(payload); // геолокация — только на карту у админов
         }
     });
 
