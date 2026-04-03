@@ -5,6 +5,7 @@ import http from 'http';
 import { getUser } from "./getUser.js";
 import { getCompany } from "./getCompany.js";
 import menuApi from "./menuApi.js";
+import { getCustomerAddressByPhone } from "./customerAddressByPhone.js";
 import { WebSocketServer } from 'ws';
 import {
     register,
@@ -147,6 +148,7 @@ app.use(
 app.get("/api/order-support/couriers",      authMiddleware, getCouriers);
 app.get("/api/order-support/pickup-points", authMiddleware, getPickupPoints);
 app.get("/api/order-support/menu",          authMiddleware, searchMenuItems);
+app.get("/api/order-support/customer-address-by-phone", authMiddleware, getCustomerAddressByPhone);
 
 // ─── Menu ────────────────────────────────────────────────────────────────────
 app.use("/api/menu", authMiddleware, menuApi);

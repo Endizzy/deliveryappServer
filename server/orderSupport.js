@@ -1,4 +1,3 @@
-// server/orderSupport.js
 import pool from "./db.js";
 
 async function resolveCompanyContext(req, res) {
