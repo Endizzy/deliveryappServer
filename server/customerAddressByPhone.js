@@ -27,6 +27,7 @@ export async function getCustomerAddressByPhone(req, res) {
     const sql = `
       SELECT
         customer_name,
+        notes,
         customer_phone,
         address_street,
         address_house,
@@ -74,6 +75,7 @@ export async function getCustomerAddressByPhone(req, res) {
       },
       meta: {
         customerName: row.customer_name || "",
+        notes: row.notes || "",
         phone: row.customer_phone || phone,
         lastOrderAt: row.created_at || null,
       },
