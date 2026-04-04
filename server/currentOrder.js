@@ -275,7 +275,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 address_lat, address_lng
          FROM current_orders
          WHERE company_id=?
-           AND status IN ('new','ready','enroute','paused')
+           AND status IN ('new','ready','enroute')
            AND address_lat IS NOT NULL AND address_lng IS NOT NULL
          ORDER BY created_at DESC
          LIMIT 500`,
@@ -302,9 +302,12 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             if (tab === "active") {
                 where.push("co.order_type='active'");
-                where.push("co.status IN ('new','ready','enroute','paused')");
+                where.push("co.status IN ('new','ready','enroute')");
             } else if (tab === "preorders") {
                 where.push("co.order_type='preorder'");
+                where.push("co.status NOT IN ('completed','cancelled')");
+            } else if (tab === "completed") {
+                where.push("co.status='completed'");
             }
 
             const sql = `
