@@ -55,7 +55,8 @@ app.get('/health', (_, res) => res.send('OK'));
 app.post("/api/auth/register",         register);
 app.post("/api/auth/login",            login);
 app.post("/api/auth/courierlogin",     courierlogin);
-app.get("/api/profile", authMiddleware, (req, res) => res.json({ ok: true, user: req.user }));
+import { getUser } from "./getUser.js";
+app.get("/api/profile", authMiddleware, getUser);
 
 // ─── 2FA ─────────────────────────────────────────────────────────────────────
 app.post("/api/auth/2fa/setup",        authMiddleware, setup2FA);
