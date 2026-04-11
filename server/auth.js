@@ -101,7 +101,58 @@ export async function login(req, res) {
             { expiresIn: "14h" }
         );
 
-        return res.json({ ok: true, token });
+        // Получаем расширенный профиль пользователя и компании
+        const [uRows] = await pool.query(
+            `SELECT user_id, first_name, last_name, email, phone, role, company_id, created_at
+             FROM users
+             WHERE user_id = ?
+                 LIMIT 1`,
+            [user.user_id]
+        );
+        let userProfile = null;
+        let company = null;
+        if (uRows.length) {
+            const u = uRows[0];
+            userProfile = {
+                id: u.user_id,
+                firstName: u.first_name,
+                lastName: u.last_name,
+                email: u.email,
+                phone: u.phone,
+                role: u.role,
+                companyId: u.company_id,
+                createdAt: u.created_at,
+            };
+            if (u.company_id != null) {
+                const [cRows] = await pool.query(
+                    `SELECT company_id, company_owner_user_id, company_owner_email, company_name, company_logo, company_phone, company_menu, created_at
+                     FROM companies
+                     WHERE company_id = ?
+                         LIMIT 1`,
+                    [u.company_id]
+                );
+                if (cRows.length) {
+                    const c = cRows[0];
+                    const base = process.env.PUBLIC_BASE_URL || req.protocol + '://' + req.get("host");
+                    let logoPath = c.company_logo || null;
+                    if (logoPath && !logoPath.startsWith("/")) {
+                        logoPath = `/companyLogo/${logoPath}`;
+                    }
+                    const logoUrl = logoPath ? `${base}${logoPath}` : null;
+                    company = {
+                        id: c.company_id,
+                        name: c.company_name,
+                        logoUrl,
+                        phone: c.company_phone,
+                        ownerUserId: c.company_owner_user_id,
+                        ownerEmail: c.company_owner_email,
+                        menuId: c.company_menu,
+                        createdAt: c.created_at,
+                    };
+                }
+            }
+        }
+        return res.json({ ok: true, token, user: userProfile, company });
     } catch (err) {
         console.error("Ошибка логина:", err);
         res.status(500).json({ error: "Ошибка сервера" });
@@ -422,7 +473,58 @@ export async function verifyLogin2FA(req, res) {
             { expiresIn: "14h" }
         );
 
-        return res.json({ ok: true, token });
+        // Получаем расширенный профиль пользователя и компании
+        const [uRows] = await pool.query(
+            `SELECT user_id, first_name, last_name, email, phone, role, company_id, created_at
+             FROM users
+             WHERE user_id = ?
+                 LIMIT 1`,
+            [decoded.userId]
+        );
+        let userProfile = null;
+        let company = null;
+        if (uRows.length) {
+            const u = uRows[0];
+            userProfile = {
+                id: u.user_id,
+                firstName: u.first_name,
+                lastName: u.last_name,
+                email: u.email,
+                phone: u.phone,
+                role: u.role,
+                companyId: u.company_id,
+                createdAt: u.created_at,
+            };
+            if (u.company_id != null) {
+                const [cRows] = await pool.query(
+                    `SELECT company_id, company_owner_user_id, company_owner_email, company_name, company_logo, company_phone, company_menu, created_at
+                     FROM companies
+                     WHERE company_id = ?
+                         LIMIT 1`,
+                    [u.company_id]
+                );
+                if (cRows.length) {
+                    const c = cRows[0];
+                    const base = process.env.PUBLIC_BASE_URL || req.protocol + '://' + req.get("host");
+                    let logoPath = c.company_logo || null;
+                    if (logoPath && !logoPath.startsWith("/")) {
+                        logoPath = `/companyLogo/${logoPath}`;
+                    }
+                    const logoUrl = logoPath ? `${base}${logoPath}` : null;
+                    company = {
+                        id: c.company_id,
+                        name: c.company_name,
+                        logoUrl,
+                        phone: c.company_phone,
+                        ownerUserId: c.company_owner_user_id,
+                        ownerEmail: c.company_owner_email,
+                        menuId: c.company_menu,
+                        createdAt: c.created_at,
+                    };
+                }
+            }
+        }
+        return res.json({ ok: true, token, user: userProfile, company });
     } catch (err) {
         console.error("Ошибка верификации 2FA при логине:", err);
         res.status(500).json({ error: "Ошибка сервера" });
