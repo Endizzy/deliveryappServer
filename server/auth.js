@@ -98,7 +98,7 @@ export async function login(req, res) {
         const token = jwt.sign(
             { userId: user.user_id, role: user.role, companyId: user.company_id },
             JWT_SECRET,
-            { expiresIn: "30m" }
+            { expiresIn: "14h" }
         );
 
         return res.json({ ok: true, token });
@@ -148,7 +148,7 @@ export async function courierlogin(req, res) {
                 unitNickname: typeof user.unit_nickname === 'string' ? user.unit_nickname : null
             },
             JWT_SECRET,
-            { expiresIn: "30m" }
+            { expiresIn: "14h" }
         );
 
         console.log(`[courierlogin] Created token for unit_id=${user.unit_id}, unit_nickname=${user.unit_nickname}`);
@@ -419,7 +419,7 @@ export async function verifyLogin2FA(req, res) {
         const token = jwt.sign(
             { userId: decoded.userId, role: decoded.role, companyId: decoded.companyId },
             JWT_SECRET,
-            { expiresIn: "30m" }
+            { expiresIn: "14h" }
         );
 
         return res.json({ ok: true, token });
