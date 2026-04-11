@@ -22,6 +22,7 @@ import mobileOrdersRouter from "./mobileOrdersRouter.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js";
+import { getReport } from "./getReport.js";
 import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js";
 import currentOrdersRouter from "./currentOrder.js";
 
@@ -156,6 +157,9 @@ app.use("/api/menu", authMiddleware, menuApi);
 // ─── User / Company ──────────────────────────────────────────────────────────
 app.get("/api/user/me",    authMiddleware, getUser);
 app.get("/api/company/me", authMiddleware, getCompany);
+
+// ─── Report ──────────────────────────────────────────────────────────────────
+app.get("/api/report", authMiddleware, getReport);
 
 // ─── Staff ───────────────────────────────────────────────────────────────────
 app.get("/api/staff",         authMiddleware, listUnits);
