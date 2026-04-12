@@ -42,7 +42,7 @@ export async function getReport(req, res) {
               '$[*]' COLUMNS (quantity INT PATH '$.quantity')
           ) AS jt ON TRUE
           WHERE co.company_id = ?
-            AND DATE(co.created_at) BETWEEN ? AND ?
+            AND DATE(co.updated_at) BETWEEN ? AND ?
             AND co.status = 'completed'
           GROUP BY co.order_id
       )
