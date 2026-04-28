@@ -338,13 +338,15 @@ wss.on('connection', (ws) => {
 
 // ─── Cron Job: Активация предзаказов каждую минуту ──────────────────────────
 // Предзаказы становятся активными за 2 часа до scheduled_at
-cron.schedule('* * * * *', async () => {
+const cronJob = cron.schedule('* * * * *', async () => {
     try {
         await activatePreorders(broadcastToAll);
     } catch (err) {
         console.error('[Cron] activatePreorders error:', err?.message ?? err);
     }
 });
+
+console.log('[Cron] ✅ activatePreorders job scheduled (every minute)');
 
 server.listen(PORT, () => {
     console.log(`HTTP + WS server running on port ${PORT}`);

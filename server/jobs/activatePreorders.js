@@ -16,12 +16,21 @@ import { rowToPanelDto } from "../currentOrder.js";
  * 
  */
 export async function activatePreorders(broadcastToAdmins) {
-    const conn = await pool.getConnection();
+    const startTime = new Date();
+    console.log(`[activatePreorders] ⏱️ Запуск в ${startTime.toISOString()}`);
+    
+    let conn;
     try {
-        // SELECT предзаказов, которые нужно активировать
-        // Условие: заказ ещё не наступил (scheduled_at > NOW())
-        //          И до заказа осталось ≤ 2 часа (scheduled_at <= NOW() + 2 HOUR)
-        const [preorders] = await conn.query(
+        conn = await pool.getConnection();
+        
+        // DEBUG: Проверим текущее время БД
+        const [[{ db_now }]] = await conn.query(`SELECT NOW() as db_now`);
+        console.log(`[activatePreorders] 🕐 Время БД: ${db_now}`);
+        
+        // ✅ ПОЛНОСТЬЮ НА SQL: SELECT только те заказы, которые нужно активировать СЕЙЧАС
+        // Условие: scheduled_at > NOW() (ещё не наступили) И 
+        //          scheduled_at <= NOW() + 2 HOUR (до них осталось ≤ 2 часа)
+        const [toActivate] = await conn.query(
             `SELECT 
                 order_id, company_id, customer_name, customer_phone, order_no,
                 order_seq, order_seq_date, address_street, address_house,
@@ -30,23 +39,25 @@ export async function activatePreorders(broadcastToAdmins) {
                 status, order_type, payment_method, people_amount, delivery_fee,
                 amount_total, amount_subtotal, amount_discount, items_json,
                 created_at, updated_at, scheduled_at,
-                courier_unit_id, courier_nickname, dispatcher_unit_id, pickup_unit_id, pickup_nickname
+                courier_unit_id, dispatcher_unit_id, pickup_unit_id,
+                NULL AS courier_nickname, NULL AS pickup_nickname
              FROM current_orders
              WHERE order_type = 'preorder'
                AND scheduled_at IS NOT NULL
+               AND status NOT IN ('completed', 'cancelled')
                AND scheduled_at > NOW()
                AND scheduled_at <= DATE_ADD(NOW(), INTERVAL 2 HOUR)
-               AND status NOT IN ('completed', 'cancelled')
-             ORDER BY scheduled_at ASC`,
+             ORDER BY scheduled_at ASC
+             LIMIT 100`,
             []
         );
 
-        if (!preorders || preorders.length === 0) {
-            console.log(`[activatePreorders] Нет предзаказов к активации`);
+        if (!toActivate || toActivate.length === 0) {
+            console.log(`[activatePreorders] ✅ Нет предзаказов к активации в этот момент`);
             return;
         }
 
-        console.log(`[activatePreorders] Найдено ${preorders.length} предзаказов к активации`);
+        console.log(`[activatePreorders] 🔄 К активации: ${toActivate.length}`);
 
         // Обработка каждого заказа
         const results = {
@@ -54,7 +65,7 @@ export async function activatePreorders(broadcastToAdmins) {
             errors: [],
         };
 
-        for (const row of preorders) {
+        for (const row of toActivate) {
             try {
                 // Защита от двойного срабатывания: проверяем статус перед UPDATE
                 const [checkRows] = await conn.query(
@@ -63,7 +74,7 @@ export async function activatePreorders(broadcastToAdmins) {
                 );
 
                 if (!checkRows || checkRows.length === 0) {
-                    console.warn(`[activatePreorders] Заказ ${row.order_id} не найден (удалён?)`);
+                    console.warn(`[activatePreorders] ❌ Заказ ${row.order_id} не найден (удалён?)`);
                     continue;
                 }
 
@@ -71,7 +82,7 @@ export async function activatePreorders(broadcastToAdmins) {
                 
                 // Если уже активирован, пропускаем
                 if (orderRecord.order_type !== 'preorder') {
-                    console.log(`[activatePreorders] Заказ ${row.order_id} уже активирован, пропускаем`);
+                    console.log(`[activatePreorders] ⏭️ Заказ ${row.order_id} уже активирован, пропускаем`);
                     continue;
                 }
 
@@ -84,7 +95,7 @@ export async function activatePreorders(broadcastToAdmins) {
                 );
 
                 if (updateResult.affectedRows > 0) {
-                    console.log(`[activatePreorders] Заказ ${row.order_id} (${row.order_no}) активирован`);
+                    console.log(`[activatePreorders] ✅ Заказ ${row.order_id} (${row.order_no}) активирован`);
                     results.success++;
 
                     // Отправляем broadcastToAdmins с обновлённым заказом
@@ -97,7 +108,7 @@ export async function activatePreorders(broadcastToAdmins) {
                         });
                     } catch (wsErr) {
                         console.error(
-                            `[activatePreorders] Ошибка при отправке WS для заказа ${row.order_id}:`,
+                            `[activatePreorders] ⚠️ Ошибка при отправке WS для заказа ${row.order_id}:`,
                             wsErr?.message ?? wsErr
                         );
                     }
@@ -115,17 +126,26 @@ export async function activatePreorders(broadcastToAdmins) {
         }
 
         console.log(
-            `[activatePreorders] Завершено. Успешно: ${results.success}, Ошибок: ${results.errors.length}`
+            `[activatePreorders] ✨ Завершено. Успешно: ${results.success}, Ошибок: ${results.errors.length}`
         );
         if (results.errors.length > 0) {
-            console.log(`[activatePreorders] Ошибки:`, results.errors);
+            console.log(`[activatePreorders] ❌ Ошибки:`, results.errors);
         }
+        
+        const duration = (new Date() - startTime);
+        console.log(`[activatePreorders] ⏱️ Время выполнения: ${duration}ms`);
     } catch (err) {
         console.error(
-            `[activatePreorders] Критическая ошибка при получении предзаказов:`,
+            `[activatePreorders] 💥 Критическая ошибка:`,
             err?.message ?? err
         );
     } finally {
-        await conn.release();
+        if (conn) {
+            try {
+                await conn.release();
+            } catch (e) {
+                console.error(`[activatePreorders] ❌ Ошибка при закрытии соединения:`, e?.message ?? e);
+            }
+        }
     }
 }
