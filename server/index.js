@@ -2,11 +2,13 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
+import cron from 'node-cron';
 import { getUser } from "./getUser.js";
 import { getCompany } from "./getCompany.js";
 import menuApi from "./menuApi.js";
 import { getCustomerAddressByPhone } from "./customerAddressByPhone.js";
 import { WebSocketServer } from 'ws';
+import { activatePreorders } from "./jobs/activatePreorders.js";
 import {
     register,
     login,
@@ -332,6 +334,16 @@ wss.on('connection', (ws) => {
     ws.on('error', (err) => {
         console.warn('WS connection error', err?.message ?? err);
     });
+});
+
+// ─── Cron Job: Активация предзаказов каждую минуту ──────────────────────────
+// Предзаказы становятся активными за 2 часа до scheduled_at
+cron.schedule('* * * * *', async () => {
+    try {
+        await activatePreorders(broadcastToAll);
+    } catch (err) {
+        console.error('[Cron] activatePreorders error:', err?.message ?? err);
+    }
 });
 
 server.listen(PORT, () => {

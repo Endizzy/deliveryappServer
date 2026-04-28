@@ -85,7 +85,7 @@ function normalizeItemsAndAmounts(items, deliveryFee) {
     };
 }
 
-function rowToPanelDto(r) {
+export function rowToPanelDto(r) {
     const addr = [
         r.address_street,
         r.address_house && `д.${r.address_house}`,
