@@ -4,10 +4,12 @@ import { rowToPanelDto } from "../currentOrder.js";
 /**
  * activatePreorders(broadcastToAdmins)
  * 
- * Автоматически переводит предзаказы в активные заказы за 2 часа до scheduled_at
+ * Автоматически переводит предзаказы в активные заказы за 2 часа до их scheduled_at
  * 
  * Логика:
- * 1. SELECT предзаказы: scheduled_at <= NOW() + 2 HOUR, order_type='preorder', status NOT IN ('completed','cancelled')
+ * 1. SELECT предзаказы: scheduled_at > NOW() (ещё не наступили) И 
+ *    scheduled_at <= NOW() + 2 HOUR (до них осталось ≤ 2 часа),
+ *    order_type='preorder', status NOT IN ('completed','cancelled')
  * 2. UPDATE каждого: order_type='active', в защищённой транзакции
  * 3. broadcastToAdmins для каждого переведённого заказа
  * 4. Логирование результатов
@@ -17,7 +19,8 @@ export async function activatePreorders(broadcastToAdmins) {
     const conn = await pool.getConnection();
     try {
         // SELECT предзаказов, которые нужно активировать
-        // Условие: scheduled_at <= NOW() + 2 HOUR
+        // Условие: заказ ещё не наступил (scheduled_at > NOW())
+        //          И до заказа осталось ≤ 2 часа (scheduled_at <= NOW() + 2 HOUR)
         const [preorders] = await conn.query(
             `SELECT 
                 order_id, company_id, customer_name, customer_phone, order_no,
@@ -31,6 +34,7 @@ export async function activatePreorders(broadcastToAdmins) {
              FROM current_orders
              WHERE order_type = 'preorder'
                AND scheduled_at IS NOT NULL
+               AND scheduled_at > NOW()
                AND scheduled_at <= DATE_ADD(NOW(), INTERVAL 2 HOUR)
                AND status NOT IN ('completed', 'cancelled')
              ORDER BY scheduled_at ASC`,
