@@ -27,6 +27,15 @@ export async function resolveCompanyContext(req, res) {
     return { companyId: Number(companyId), user: req.user };
 }
 
+// формат времени для MySQL DATETIME: "2026-04-28 11:50:00"
+function toMySQLDatetime(isoString) {
+    if (!isoString) return null;
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return null;
+    // "2026-04-28T11:50:00.000Z" → "2026-04-28 11:50:00"
+    return d.toISOString().slice(0, 19).replace("T", " ");
+}
+
 function normalizeItemsAndAmounts(items, deliveryFee) {
     const toCents = (amount) => {
         const s = typeof amount === "string" ? amount.trim().replace(",", ".") : amount;
@@ -388,7 +397,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const orderNo = b.orderNo || `CO-${Date.now().toString().slice(-8)}`;
             const payment_method = coercePaymentMethod(b.payment);
             const order_type = b.orderType || "active";
-            const scheduled_at = b.scheduledAt || null;
+            const scheduled_at = toMySQLDatetime(b.scheduledAt);
 
             // определяем «операционный день»
             const order_seq_date = deriveOrderSeqDate(order_type, scheduled_at);
