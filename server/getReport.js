@@ -54,6 +54,7 @@ export async function getReport(req, res) {
           COALESCE(SUM(os.amount_total), 0) AS total_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'cash' THEN os.amount_total ELSE 0 END), 0) AS total_cash_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'card' THEN os.amount_total ELSE 0 END), 0) AS total_card_sum,
+          COALESCE(SUM(CASE WHEN os.payment_method = 'wire' THEN os.amount_total ELSE 0 END), 0) AS total_wire_sum,
           COALESCE(SUM(os.items_count), 0) AS total_items
       FROM
           company_units cu
@@ -75,6 +76,7 @@ export async function getReport(req, res) {
           COALESCE(SUM(os.amount_total), 0) AS total_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'cash' THEN os.amount_total ELSE 0 END), 0) AS total_cash_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'card' THEN os.amount_total ELSE 0 END), 0) AS total_card_sum,
+          COALESCE(SUM(CASE WHEN os.payment_method = 'wire' THEN os.amount_total ELSE 0 END), 0) AS total_wire_sum,
           COALESCE(SUM(os.items_count), 0) AS total_items
       FROM OrderStats os
       WHERE os.courier_unit_id IS NULL
