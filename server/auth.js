@@ -120,7 +120,7 @@ export async function courierlogin(req, res) {
         const [rows] = await pool.query(
             `SELECT unit_id, unit_nickname, unit_role, company_id, unit_password_hash, is_active
          FROM company_units
-        WHERE unit_email = ? OR unit_phone = ?
+        WHERE unit_email = ? OR unit_phone = ? AND unit_role = 'courier'
         LIMIT 1`,
             [identifier, identifier]
         );

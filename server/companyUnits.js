@@ -1,4 +1,3 @@
-// server/companyUnits.js
 import pool from "./db.js";
 import bcrypt from "bcrypt";
 
