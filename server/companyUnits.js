@@ -71,14 +71,14 @@ export async function listUnits(req, res) {
 
         const q = (req.query.q || "").trim().toLowerCase();
         let sql =
-            "SELECT * FROM company_units WHERE company_id = ? ORDER BY unit_id DESC";
+            "SELECT * FROM users WHERE company_id = ? ORDER BY user_id DESC";
         let params = [companyId];
 
         if (q) {
             sql =
-                "SELECT * FROM company_units " +
-                "WHERE company_id = ? AND (LOWER(unit_nickname) LIKE ? OR LOWER(unit_phone) LIKE ? OR LOWER(unit_role) LIKE ?) " +
-                "ORDER BY unit_id DESC";
+                "SELECT * FROM users " +
+                "WHERE company_id = ? AND (LOWER(nickname) LIKE ? OR LOWER(phone) LIKE ? OR LOWER(role) LIKE ?) " +
+                "ORDER BY user_id DESC";
             params = [companyId, `%${q}%`, `%${q}%`, `%${q}%`];
         }
 
