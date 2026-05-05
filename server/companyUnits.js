@@ -97,8 +97,8 @@ export async function createUnit(req, res) {
         const { companyId } = ctx;
 
         const {
-            firstName = null,
-            lastName = null,
+            firstName = "company",
+            lastName = "unit",
             nickname,
             phone,
             email = null,
