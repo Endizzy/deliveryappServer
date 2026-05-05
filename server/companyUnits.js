@@ -71,14 +71,14 @@ export async function listUnits(req, res) {
 
         const q = (req.query.q || "").trim().toLowerCase();
         let sql =
-            "SELECT * FROM users WHERE company_id = ? ORDER BY user_id DESC";
+            "SELECT * FROM company_units WHERE company_id = ? ORDER BY unit_id DESC";
         let params = [companyId];
 
         if (q) {
             sql =
-                "SELECT * FROM users " +
-                "WHERE company_id = ? AND (LOWER(nickname) LIKE ? OR LOWER(phone) LIKE ? OR LOWER(role) LIKE ?) " +
-                "ORDER BY user_id DESC";
+                "SELECT * FROM company_units " +
+                "WHERE company_id = ? AND (LOWER(unit_nickname) LIKE ? OR LOWER(unit_phone) LIKE ? OR LOWER(unit_role) LIKE ?) " +
+                "ORDER BY unit_id DESC";
             params = [companyId, `%${q}%`, `%${q}%`, `%${q}%`];
         }
 
@@ -97,8 +97,6 @@ export async function createUnit(req, res) {
         const { companyId } = ctx;
 
         const {
-            firstName = "company",
-            lastName = "unit",
             nickname,
             phone,
             email = null,
@@ -117,21 +115,15 @@ export async function createUnit(req, res) {
 
         const hash = await bcrypt.hash(String(password), SALT_ROUNDS);
 
-        // const [result] = await pool.query(
-        //     `INSERT INTO company_units
-        //      (company_id, unit_nickname, unit_phone, unit_email, unit_role, unit_password_hash, is_active)
-        //      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        //     [companyId, nickname, phone, email, role, hash, active ? 1 : 0]
         const [result] = await pool.query(
-            `INSERT INTO users
-             (first_name, last_name, company_id, nickname, phone, email, role, password, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [firstName, lastName, companyId, nickname, phone, email, role, hash, active ? 1 : 0]
-
+            `INSERT INTO company_units
+             (company_id, unit_nickname, unit_phone, unit_email, unit_role, unit_password_hash, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [companyId, nickname, phone, email, role, hash, active ? 1 : 0]
         );
 
         const [rows] = await pool.query(
-            "SELECT * FROM users WHERE user_id = ? AND company_id = ?",
+            "SELECT * FROM company_units WHERE unit_id = ? AND company_id = ?",
             [result.insertId, companyId]
         );
         res.status(201).json({ ok: true, item: mapUnit(rows[0]) });
@@ -158,13 +150,13 @@ export async function updateUnit(req, res) {
         const fields = [];
         const params = [];
 
-        if (nickname !== undefined) { fields.push("nickname=?"); params.push(nickname); }
-        if (phone !== undefined)    { fields.push("phone=?");    params.push(phone); }
-        if (email !== undefined)    { fields.push("email=?");    params.push(email || null); }
+        if (nickname !== undefined) { fields.push("unit_nickname=?"); params.push(nickname); }
+        if (phone !== undefined)    { fields.push("unit_phone=?");    params.push(phone); }
+        if (email !== undefined)    { fields.push("unit_email=?");    params.push(email || null); }
         if (role !== undefined) {
             if (!["courier", "admin"].includes(String(role)))
                 return res.status(400).json({ ok: false, error: "Некорректная роль" });
-            fields.push("role=?"); params.push(role);
+            fields.push("unit_role=?"); params.push(role);
         }
         if (active !== undefined)   { fields.push("is_active=?");     params.push(active ? 1 : 0); }
         if (password) {
@@ -176,8 +168,8 @@ export async function updateUnit(req, res) {
         if (!fields.length) return res.json({ ok: true, item: null });
 
         const sql =
-            `UPDATE users SET ${fields.join(", ")}, updated_at=CURRENT_TIMESTAMP
-             WHERE user_id=? AND company_id=?`;
+            `UPDATE company_units SET ${fields.join(", ")}, updated_at=CURRENT_TIMESTAMP
+             WHERE unit_id=? AND company_id=?`;
         params.push(id, companyId);
 
         const [result] = await pool.query(sql, params);
@@ -185,7 +177,7 @@ export async function updateUnit(req, res) {
             return res.status(404).json({ ok: false, error: "Не найдено" });
 
         const [rows] = await pool.query(
-            "SELECT * FROM users WHERE user_id=? AND company_id=?",
+            "SELECT * FROM company_units WHERE unit_id=? AND company_id=?",
             [id, companyId]
         );
         res.json({ ok: true, item: rows.length ? mapUnit(rows[0]) : null });
@@ -209,7 +201,7 @@ export async function deleteUnit(req, res) {
         const id = Number(req.params.id);
 
         const [result] = await pool.query(
-            "DELETE FROM users WHERE user_id=? AND company_id=?",
+            "DELETE FROM company_units WHERE unit_id=? AND company_id=?",
             [id, companyId]
         );
         if (result.affectedRows === 0)
