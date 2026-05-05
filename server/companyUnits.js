@@ -97,6 +97,8 @@ export async function createUnit(req, res) {
         const { companyId } = ctx;
 
         const {
+            firstName = null,
+            lastName = null,
             nickname,
             phone,
             email = null,
@@ -122,9 +124,9 @@ export async function createUnit(req, res) {
         //     [companyId, nickname, phone, email, role, hash, active ? 1 : 0]
         const [result] = await pool.query(
             `INSERT INTO users
-             (company_id, nickname, phone, email, role, password, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [companyId, nickname, phone, email, role, hash, active ? 1 : 0]
+             (first_name, last_name, company_id, nickname, phone, email, role, password, is_active)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [firstName, lastName, companyId, nickname, phone, email, role, hash, active ? 1 : 0]
 
         );
 
@@ -162,7 +164,7 @@ export async function updateUnit(req, res) {
         if (role !== undefined) {
             if (!["courier", "admin"].includes(String(role)))
                 return res.status(400).json({ ok: false, error: "Некорректная роль" });
-            fields.push("unit_role=?"); params.push(role);
+            fields.push("role=?"); params.push(role);
         }
         if (active !== undefined)   { fields.push("is_active=?");     params.push(active ? 1 : 0); }
         if (password) {
