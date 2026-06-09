@@ -27,6 +27,12 @@ import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js
 import { getReport } from "./getReport.js";
 import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js";
 import currentOrdersRouter from "./currentOrder.js";
+import {
+    ensurePushTokenTable,
+    savePushToken,
+    deletePushTokensByUnit,
+    sendOrderPush,
+} from "./services/pushService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -133,11 +139,57 @@ function broadcastToCompany(companyId, payload) {
 // ─── Current Orders (admin) ──────────────────────────────────────────────────
 // broadcastToAll — чтобы курьеры тоже получали order_created / order_updated
 // от действий администратора (CreateOrder.jsx / EditOrder.jsx)
+//
+// broadcastAndPush — аддитивная обёртка: помимо WS, при создании заказа
+// (order_created) отправляет push-уведомление курьерам компании. WS-логику
+// не меняем — currentOrder.js по-прежнему вызывает один аргумент.
+function broadcastAndPush(payload) {
+    broadcastToAll(payload);
+    if (payload?.type === "order_created" && typeof payload.companyId === "number") {
+        sendOrderPush(payload.companyId, payload.order);
+    }
+}
+
 app.use(
     "/api/current-orders",
     authMiddleware,
-    currentOrdersRouter({ broadcastToAdmins: broadcastToAll })
+    currentOrdersRouter({ broadcastToAdmins: broadcastAndPush })
 );
+
+// ─── Push notifications (courier devices) ────────────────────────────────────
+app.post("/api/push/register-token", authMiddleware, async (req, res) => {
+    try {
+        const { token, platform } = req.body || {};
+        if (!token || typeof token !== "string") {
+            return res.status(400).json({ ok: false, error: "token required" });
+        }
+        const unitId = req.user?.userId;
+        const companyId = req.user?.companyId;
+        if (!unitId || typeof companyId !== "number") {
+            return res.status(401).json({ ok: false, error: "unauthorized" });
+        }
+        await savePushToken({ unitId, companyId, token, platform });
+        res.json({ ok: true });
+    } catch (e) {
+        console.error("register-token", e);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
+app.post("/api/push/unregister-token", authMiddleware, async (req, res) => {
+    try {
+        await deletePushTokensByUnit(req.user?.userId);
+        res.json({ ok: true });
+    } catch (e) {
+        console.error("unregister-token", e);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
+// Создаём таблицу токенов при старте (idempotent)
+ensurePushTokenTable()
+    .then(() => console.log("[push] courier_push_tokens table ready"))
+    .catch((e) => console.error("[push] ensure table failed:", e?.message ?? e));
 
 // ─── Mobile Orders (couriers) ────────────────────────────────────────────────
 // broadcastToCompany — для assign/release (два аргумента: companyId, payload)
