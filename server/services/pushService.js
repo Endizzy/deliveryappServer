@@ -7,23 +7,6 @@ import pool from "../db.js";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
-// ── Таблица токенов (idempotent, создаётся при старте сервера) ───────────────
-export async function ensurePushTokenTable() {
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS courier_push_tokens (
-            id          INT AUTO_INCREMENT PRIMARY KEY,
-            unit_id     INT NOT NULL,
-            company_id  INT NOT NULL,
-            token       VARCHAR(255) NOT NULL,
-            platform    VARCHAR(16)  DEFAULT NULL,
-            updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uniq_token (token),
-            KEY idx_company (company_id),
-            KEY idx_unit (unit_id)
-        )
-    `);
-}
-
 // ── Сохранить/обновить токен курьера (upsert по token) ──────────────────────
 export async function savePushToken({ unitId, companyId, token, platform }) {
     await pool.query(
