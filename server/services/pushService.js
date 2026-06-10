@@ -1,7 +1,4 @@
-// services/pushService.js
-// Push-уведомления курьерам через Expo Push API (поверх FCM).
-// Дополняет WebSocket: WS — для живых обновлений при открытом приложении,
-// push — чтобы «разбудить» курьера, когда приложение свёрнуто или закрыто.
+
 
 import pool from "../db.js";
 
@@ -68,6 +65,7 @@ export async function sendOrderPush(companyId, order, opts = {}) {
 
         const allTokens = await getCompanyCourierTokens(companyId, opts.excludeUnitId);
         const tokens = allTokens.filter(isExpoToken);
+        console.log(`[push] sendOrderPush company=${companyId}: ${allTokens.length} rows, ${tokens.length} valid tokens`);
         if (tokens.length === 0) return;
 
         const { title, body } = buildOrderMessage(order);
@@ -100,6 +98,7 @@ export async function sendOrderPush(companyId, order, opts = {}) {
                     body: JSON.stringify(chunk),
                 });
                 const json = await res.json().catch(() => null);
+                console.log("[push] Expo response:", JSON.stringify(json));
                 const data = json?.data;
                 if (Array.isArray(data)) {
                     data.forEach((ticket, idx) => {

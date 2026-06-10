@@ -28,7 +28,6 @@ import { getReport } from "./getReport.js";
 import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js";
 import currentOrdersRouter from "./currentOrder.js";
 import {
-    ensurePushTokenTable,
     savePushToken,
     deletePushTokensByUnit,
     sendOrderPush,
@@ -160,18 +159,21 @@ app.use(
 app.post("/api/push/register-token", authMiddleware, async (req, res) => {
     try {
         const { token, platform } = req.body || {};
+        console.log(`[push] register-token hit: unit=${req.user?.userId} company=${req.user?.companyId} platform=${platform} token=${String(token).slice(0, 24)}...`);
         if (!token || typeof token !== "string") {
             return res.status(400).json({ ok: false, error: "token required" });
         }
         const unitId = req.user?.userId;
         const companyId = req.user?.companyId;
         if (!unitId || typeof companyId !== "number") {
+            console.warn(`[push] register-token unauthorized: unit=${unitId} company=${companyId}`);
             return res.status(401).json({ ok: false, error: "unauthorized" });
         }
         await savePushToken({ unitId, companyId, token, platform });
+        console.log(`[push] token saved for unit=${unitId} company=${companyId}`);
         res.json({ ok: true });
     } catch (e) {
-        console.error("register-token", e);
+        console.error("[push] register-token error:", e);
         res.status(500).json({ ok: false, error: "server error" });
     }
 });
@@ -185,11 +187,6 @@ app.post("/api/push/unregister-token", authMiddleware, async (req, res) => {
         res.status(500).json({ ok: false, error: "server error" });
     }
 });
-
-// Создаём таблицу токенов при старте (idempotent)
-ensurePushTokenTable()
-    .then(() => console.log("[push] courier_push_tokens table ready"))
-    .catch((e) => console.error("[push] ensure table failed:", e?.message ?? e));
 
 // ─── Mobile Orders (couriers) ────────────────────────────────────────────────
 // broadcastToCompany — для assign/release (два аргумента: companyId, payload)
