@@ -56,3 +56,42 @@ export async function geoapifyGeocodeByText(text) {
 
   return { ok: true, lat, lng, raw: item };
 }
+
+// Обратный геокодинг: координаты → адрес (для перетаскивания маркера на карте)
+export async function geoapifyReverseGeocode(lat, lng) {
+  const apiKey = process.env.GEOAPIFY_KEY;
+  if (!apiKey) return { ok: false, error: "GEOAPIFY_KEY missing" };
+
+  const latNum = Number(lat);
+  const lngNum = Number(lng);
+  if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+    return { ok: false, error: "Invalid coordinates" };
+  }
+
+  const url =
+    "https://api.geoapify.com/v1/geocode/reverse" +
+    `?lat=${latNum}&lon=${lngNum}` +
+    `&format=json&limit=1` +
+    `&apiKey=${encodeURIComponent(apiKey)}`;
+
+  const res = await fetch(url, {
+    headers: { "User-Agent": "delivery-admin/1.0" },
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    return { ok: false, error: `Geoapify ${res.status}: ${body.slice(0, 200)}` };
+  }
+
+  const data = await res.json();
+  const item = data?.results?.[0];
+  if (!item) return { ok: false, error: "No reverse geocode results" };
+
+  return {
+    ok: true,
+    lat: latNum,
+    lng: lngNum,
+    formatted: item.formatted ?? "",
+    raw: item,
+  };
+}

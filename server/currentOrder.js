@@ -463,23 +463,46 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const order_id = result.insertId;
 
-            // Геокодинг сразу после создания (best-effort)
-            const geoText = buildGeoTextFromBody(b);
-            if (geoText) {
+            // Координаты доставки.
+            // Если админ проверил и подтвердил адрес на карте при создании —
+            // используем переданные координаты (точнее, проверено человеком).
+            // Иначе — fallback на серверный геокодинг (как раньше).
+            const manualLat = Number(b.addressLat);
+            const manualLng = Number(b.addressLng);
+            const hasManualCoords =
+                Number.isFinite(manualLat) && Number.isFinite(manualLng);
+
+            if (hasManualCoords) {
                 try {
-                    const geo = await geoapifyGeocodeText(geoText);
-                    if (geo.ok) {
-                        await pool.query(
-                            `UPDATE current_orders
-               SET address_lat=?, address_lng=?, geocoded_at=NOW(),
-                   geocode_provider='geoapify', geocode_raw=?, updated_at=NOW()
-               WHERE company_id=? AND order_id=?`,
-                            [geo.lat, geo.lng, JSON.stringify(geo.raw), companyId, order_id]
-                        );
-                    }
+                    await pool.query(
+                        `UPDATE current_orders
+                           SET address_lat=?, address_lng=?, geocoded_at=NOW(),
+                               geocode_provider='manual', updated_at=NOW()
+                         WHERE company_id=? AND order_id=?`,
+                        [manualLat, manualLng, companyId, order_id]
+                    );
                 } catch (ge) {
-                    // Не валим создание заказа, просто логируем
-                    console.warn("geoapify geocode failed:", ge?.message || ge);
+                    console.warn("manual coords save failed:", ge?.message || ge);
+                }
+            } else {
+                // Геокодинг сразу после создания (best-effort)
+                const geoText = buildGeoTextFromBody(b);
+                if (geoText) {
+                    try {
+                        const geo = await geoapifyGeocodeText(geoText);
+                        if (geo.ok) {
+                            await pool.query(
+                                `UPDATE current_orders
+                   SET address_lat=?, address_lng=?, geocoded_at=NOW(),
+                       geocode_provider='geoapify', geocode_raw=?, updated_at=NOW()
+                   WHERE company_id=? AND order_id=?`,
+                                [geo.lat, geo.lng, JSON.stringify(geo.raw), companyId, order_id]
+                            );
+                        }
+                    } catch (ge) {
+                        // Не валим создание заказа, просто логируем
+                        console.warn("geoapify geocode failed:", ge?.message || ge);
+                    }
                 }
             }
 

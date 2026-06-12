@@ -32,6 +32,11 @@ import {
     deletePushTokensByUnit,
     sendOrderPush,
 } from "./services/pushService.js";
+import {
+    geoapifyGeocodeByText,
+    geoapifyReverseGeocode,
+    buildAddressText,
+} from "./services/geoapify/geoapify.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -184,6 +189,52 @@ app.post("/api/push/unregister-token", authMiddleware, async (req, res) => {
         res.json({ ok: true });
     } catch (e) {
         console.error("unregister-token", e);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
+// ─── Geocoding (для проверки адреса на карте при создании заказа) ────────────
+// Прокси к Geoapify: ключ остаётся на сервере и не попадает в браузерный бандл.
+app.post("/api/geocode", authMiddleware, async (req, res) => {
+    try {
+        const b = req.body || {};
+        const text =
+            typeof b.text === "string" && b.text.trim()
+                ? b.text.trim()
+                : buildAddressText(b);
+        if (!text) {
+            return res.status(400).json({ ok: false, error: "address required" });
+        }
+        const geo = await geoapifyGeocodeByText(text);
+        if (!geo.ok) {
+            return res.status(502).json({ ok: false, error: geo.error });
+        }
+        res.json({
+            ok: true,
+            lat: geo.lat,
+            lng: geo.lng,
+            formatted: geo.raw?.formatted ?? text,
+        });
+    } catch (e) {
+        console.error("[geocode] error:", e?.message ?? e);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
+app.post("/api/reverse-geocode", authMiddleware, async (req, res) => {
+    try {
+        const lat = Number(req.body?.lat);
+        const lng = Number(req.body?.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+            return res.status(400).json({ ok: false, error: "lat/lng required" });
+        }
+        const geo = await geoapifyReverseGeocode(lat, lng);
+        if (!geo.ok) {
+            return res.status(502).json({ ok: false, error: geo.error });
+        }
+        res.json({ ok: true, lat: geo.lat, lng: geo.lng, formatted: geo.formatted });
+    } catch (e) {
+        console.error("[reverse-geocode] error:", e?.message ?? e);
         res.status(500).json({ ok: false, error: "server error" });
     }
 });
