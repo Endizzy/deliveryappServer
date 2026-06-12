@@ -1,4 +1,4 @@
-import fetch from "node-fetch";
+// Node 18+ предоставляет глобальный fetch — отдельный пакет не нужен.
 
 export function buildAddressText(order) {
   // поддерживаем оба формата ключей:
