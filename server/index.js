@@ -27,6 +27,7 @@ import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js
 import { getReport } from "./getReport.js";
 import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js";
 import currentOrdersRouter from "./currentOrder.js";
+import deliveryZonesRouter from "./deliveryZones.js";
 import {
     savePushToken,
     deletePushTokensByUnit,
@@ -238,6 +239,9 @@ app.post("/api/reverse-geocode", authMiddleware, async (req, res) => {
         res.status(500).json({ ok: false, error: "server error" });
     }
 });
+
+// ─── Delivery Zones (admin) ──────────────────────────────────────────────────
+app.use("/api/delivery-zones", authMiddleware, deliveryZonesRouter);
 
 // ─── Mobile Orders (couriers) ────────────────────────────────────────────────
 // broadcastToCompany — для assign/release (два аргумента: companyId, payload)
