@@ -590,6 +590,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const payment_method = coercePaymentMethod(b.payment);
 
+            await ensureCompletedAtColumn();
             await pool.query(
                 `UPDATE current_orders
          SET order_type=?, status=?, scheduled_at=?,
@@ -598,7 +599,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
              delivery_fee=?,
              customer_name=?, customer_phone=?,
              address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?, people_amount=?,
-             notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW()
+             notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW(),
+             completed_at = CASE WHEN ? = 'completed' THEN UTC_TIMESTAMP() ELSE completed_at END
          WHERE company_id=? AND order_id=?`,
                 [
                     b.orderType || "active",
@@ -622,6 +624,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     amount_subtotal,
                     amount_discount,
                     amount_total,
+                    b.status || "new",
                     companyId,
                     id,
                 ]
