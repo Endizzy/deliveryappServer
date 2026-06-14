@@ -113,6 +113,7 @@ export function rowToPanelDto(r) {
         status: r.status,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
+        completedAt: r.completed_at ?? null,
         scheduledAt: r.scheduled_at,
         amountTotal: Number(r.amount_total),
         deliveryFee: Number(r.delivery_fee || 0),
@@ -163,6 +164,37 @@ export function deriveOrderSeqDate(orderType, scheduledAt) {
     }
     const now = new Date();
     return now.toISOString().slice(0, 10);
+}
+
+/** Ленивая авто-миграция колонки completed_at (выполняется один раз) */
+let _completedAtReady = false;
+export async function ensureCompletedAtColumn() {
+    if (_completedAtReady) return;
+    try {
+        const [rows] = await pool.query(
+            `SELECT COUNT(*) AS c
+               FROM information_schema.columns
+              WHERE table_schema = DATABASE()
+                AND table_name = 'current_orders'
+                AND column_name = 'completed_at'`
+        );
+        if (!rows.length || Number(rows[0].c) === 0) {
+            await pool.query(`ALTER TABLE current_orders ADD COLUMN completed_at DATETIME NULL`);
+        }
+        _completedAtReady = true;
+    } catch (e) {
+        console.warn("ensureCompletedAtColumn failed:", e?.message || e);
+    }
+}
+
+/** Границы текущего операционного дня в UTC (та же конвенция, что у order_seq_date) */
+export function todayUtcRange() {
+    const now = new Date();
+    const startDate = now.toISOString().slice(0, 10);
+    const nextDate = new Date(now.getTime() + 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+    return { start: `${startDate} 00:00:00`, end: `${nextDate} 00:00:00` };
 }
 
 /** Транзакционное получение следующего порядкового номера за день */
@@ -306,6 +338,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const { companyId } = ctx;
             const tab = (req.query.tab || "active").toLowerCase();
 
+            await ensureCompletedAtColumn();
+
             const where = ["co.company_id=?"];
             const params = [companyId];
 
@@ -316,7 +350,11 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 where.push("co.order_type='preorder'");
                 where.push("co.status NOT IN ('completed','cancelled')");
             } else if (tab === "completed") {
+                // только заказы, завершённые СЕГОДНЯ (UTC-день, как order_seq_date)
+                const { start, end } = todayUtcRange();
                 where.push("co.status='completed'");
+                where.push("co.completed_at >= ? AND co.completed_at < ?");
+                params.push(start, end);
             }
 
             const sql = `
@@ -625,10 +663,13 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             if (!status)
                 return res.status(400).json({ ok: false, error: "Не указан статус" });
 
+            await ensureCompletedAtColumn();
             await pool.query(
-                `UPDATE current_orders SET status=?, updated_at=NOW()
-         WHERE company_id=? AND order_id=?`,
-                [status, companyId, id]
+                `UPDATE current_orders
+                    SET status=?, updated_at=NOW(),
+                        completed_at = CASE WHEN ? = 'completed' THEN UTC_TIMESTAMP() ELSE completed_at END
+                  WHERE company_id=? AND order_id=?`,
+                [status, status, companyId, id]
             );
 
             const [rows] = await pool.query(

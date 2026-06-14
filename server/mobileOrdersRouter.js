@@ -1,6 +1,6 @@
 import express from "express";
 import pool from "./db.js";
-import { resolveCompanyContext } from "./currentOrder.js";
+import { resolveCompanyContext, ensureCompletedAtColumn, todayUtcRange } from "./currentOrder.js";
 
 function rowToMobileOrderDto(r) {
   const addr = [
@@ -22,6 +22,7 @@ function rowToMobileOrderDto(r) {
     status:        r.status,
     createdAt:     r.created_at,
     updatedAt:     r.updated_at,
+    completedAt:   r.completed_at ?? null,
     scheduledAt:   r.scheduled_at,
     amountTotal:   Number(r.amount_total),
     deliveryFee:   Number(r.delivery_fee || 0),
@@ -89,7 +90,9 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       const tab       = (req.query.tab || "active").toLowerCase();
       const courierId = user.unitId || user.unit_id || user.userId || null;
 
-      const where  = ["co.company_id=?", "co.status NOT IN ('cancelled','completed')"];
+      await ensureCompletedAtColumn();
+
+      const where  = ["co.company_id=?", "co.status != 'cancelled'"];
       const params = [companyId];
 
       if (tab === "active") {
@@ -99,8 +102,13 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
         if (!courierId) return res.json({ ok: true, items: [] });
         where.push("co.courier_unit_id=?");
         params.push(courierId);
+        // завершённые показываем только за сегодня (UTC-день, как order_seq_date)
+        const { start, end } = todayUtcRange();
+        where.push("(co.status <> 'completed' OR (co.completed_at >= ? AND co.completed_at < ?))");
+        params.push(start, end);
       } else if (tab === "all") {
         where.push("co.courier_unit_id IS NULL");
+        where.push("co.status <> 'completed'");
       }
 
       const [rows] = await pool.query(
@@ -282,8 +290,9 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
         return res.status(403).json({ ok: false, error: "Вы не можете завершить этот заказ" });
       }
 
+      await ensureCompletedAtColumn();
       await pool.query(
-        "UPDATE current_orders SET status='completed', updated_at=NOW() WHERE company_id=? AND order_id=?",
+        "UPDATE current_orders SET status='completed', completed_at=UTC_TIMESTAMP(), updated_at=NOW() WHERE company_id=? AND order_id=?",
         [companyId, orderId]
       );
 
