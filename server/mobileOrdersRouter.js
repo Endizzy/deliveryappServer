@@ -89,7 +89,7 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       const tab       = (req.query.tab || "active").toLowerCase();
       const courierId = user.unitId || user.unit_id || user.userId || null;
 
-      const where  = ["co.company_id=?", "co.status != 'cancelled'"];
+      const where  = ["co.company_id=?", "co.status NOT IN ('cancelled','completed')"];
       const params = [companyId];
 
       if (tab === "active") {
@@ -253,6 +253,53 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       res.json({ ok: true, message: "Заказ успешно отказан" });
     } catch (e) {
       console.error("release order error", e);
+      res.status(500).json({ ok: false, error: "Ошибка сервера" });
+    }
+  });
+
+  // ── PATCH /api/mobile-orders/:id/complete ───────────────────────────────
+  // Курьер закрывает заказ после доставки → статус 'completed' + WS-оповещение.
+  router.patch("/:id/complete", async (req, res) => {
+    try {
+      const ctx = await resolveCompanyContext(req, res);
+      if (!ctx) return;
+
+      const { companyId, user } = ctx;
+      const orderId   = Number(req.params.id);
+      const courierId = user.unitId || user.unit_id || user.userId || null;
+
+      const [[existing]] = await pool.query(
+        "SELECT order_id, courier_unit_id, status FROM current_orders WHERE company_id=? AND order_id=?",
+        [companyId, orderId]
+      );
+      if (!existing) return res.status(404).json({ ok: false, error: "Заказ не найден" });
+
+      // завершить может только назначенный курьер
+      if (
+        !existing.courier_unit_id ||
+        String(existing.courier_unit_id) !== String(courierId)
+      ) {
+        return res.status(403).json({ ok: false, error: "Вы не можете завершить этот заказ" });
+      }
+
+      await pool.query(
+        "UPDATE current_orders SET status='completed', updated_at=NOW() WHERE company_id=? AND order_id=?",
+        [companyId, orderId]
+      );
+
+      // Broadcast — всем клиентам компании (admin + courier)
+      const updatedRow = await fetchOrderById(companyId, orderId);
+      if (updatedRow) {
+        broadcastToCompany(companyId, {
+          type:      "order_updated",
+          order:     rowToMobileOrderDto(updatedRow),
+          companyId: companyId,
+        });
+      }
+
+      res.json({ ok: true, message: "Заказ завершён" });
+    } catch (e) {
+      console.error("complete order error", e);
       res.status(500).json({ ok: false, error: "Ошибка сервера" });
     }
   });
