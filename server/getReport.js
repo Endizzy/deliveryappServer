@@ -109,7 +109,7 @@ export async function getMobileTodayReport(req, res) {
   try {
     const ctx = await resolveCompanyContext(req, res);
     if (!ctx) return;
-    const { companyId } = ctx;
+    const { companyId, user } = ctx;
 
     await ensureCompletedAtColumn();
     const { start, end } = todayUtcRange();
@@ -189,7 +189,16 @@ export async function getMobileTodayReport(req, res) {
       { totalOrders: 0, totalSum: 0, cash: 0, card: 0, wire: 0, totalItems: 0 }
     );
 
-    res.json({ ok: true, date: start.slice(0, 10), couriers, totals });
+    // Сводка по текущему (авторизованному) курьеру
+    const myId = user?.unitId ?? user?.unit_id ?? user?.userId ?? null;
+    const mine =
+      myId != null
+        ? couriers.find(
+            (c) => c.unitId != null && String(c.unitId) === String(myId)
+          ) || null
+        : null;
+
+    res.json({ ok: true, date: start.slice(0, 10), couriers, totals, mine });
   } catch (err) {
     console.error("getMobileTodayReport error:", err);
     res.status(500).json({ ok: false, error: "Ошибка сервера" });
