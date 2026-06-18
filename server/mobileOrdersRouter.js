@@ -30,6 +30,8 @@ function rowToMobileOrderDto(r) {
     customer:      r.customer_name,
     phone:         r.customer_phone,
     address:       addr,
+    addressLat:    r.address_lat != null ? Number(r.address_lat) : null,
+    addressLng:    r.address_lng != null ? Number(r.address_lng) : null,
     outlet:        r.pickup_nickname || "",   // для мобильного
     pickupName:    r.pickup_nickname || "",   // для клиента
     courierId:     r.courier_unit_id ?? null,

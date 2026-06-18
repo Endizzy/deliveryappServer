@@ -599,6 +599,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
              delivery_fee=?,
              customer_name=?, customer_phone=?,
              address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?, people_amount=?,
+             address_lat=?, address_lng=?,
              notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW(),
              completed_at = CASE WHEN ? = 'completed' THEN UTC_TIMESTAMP() ELSE completed_at END
          WHERE company_id=? AND order_id=?`,
@@ -619,6 +620,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     b.floor || null,
                     b.code || null,
                     b.numOfPeople || null,
+                    Number.isFinite(Number(b.addressLat)) ? Number(b.addressLat) : null,
+                    Number.isFinite(Number(b.addressLng)) ? Number(b.addressLng) : null,
                     b.notes || null,
                     JSON.stringify(items),
                     amount_subtotal,
