@@ -1,4 +1,5 @@
 import pool from "./db.js";
+import { ensureColorColumn } from "./companyUnits.js";
 
 async function resolveCompanyContext(req, res) {
     const u = req.user || {};
@@ -27,15 +28,17 @@ export async function getCouriers(req, res) {
         if (!ctx) return;
         const { companyId } = ctx;
 
+        await ensureColorColumn();
+
         const [rows] = await pool.query(
-            `SELECT unit_id, unit_nickname
+            `SELECT unit_id, unit_nickname, color
              FROM company_units
              WHERE company_id=? AND unit_role='courier' AND is_active=1
              ORDER BY unit_nickname ASC`,
             [companyId]
         );
 
-        res.json({ ok: true, items: rows.map(r => ({ id: r.unit_id, nickname: r.unit_nickname })) });
+        res.json({ ok: true, items: rows.map(r => ({ id: r.unit_id, nickname: r.unit_nickname, color: r.color || null })) });
     } catch (e) {
         console.error("getCouriers error:", e);
         res.status(500).json({ ok: false, error: "Ошибка сервера" });

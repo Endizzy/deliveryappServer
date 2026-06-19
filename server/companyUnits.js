@@ -3,6 +3,34 @@ import bcrypt from "bcrypt";
 
 const SALT_ROUNDS = 10;
 
+// Палитра цветов курьеров
+const COLOR_PALETTE = [
+    "#2F8CFF", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6",
+    "#EC4899", "#14B8A6", "#F97316", "#6366F1", "#84CC16",
+];
+const isHexColor = (v) => typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v);
+const randomColor = () => COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)];
+
+// Ленивая авто-миграция колонки color (выполняется один раз)
+let _colorReady = false;
+export async function ensureColorColumn() {
+    if (_colorReady) return;
+    try {
+        const [rows] = await pool.query(
+            `SELECT COUNT(*) AS c FROM information_schema.columns
+              WHERE table_schema = DATABASE()
+                AND table_name = 'company_units'
+                AND column_name = 'color'`
+        );
+        if (!rows.length || Number(rows[0].c) === 0) {
+            await pool.query(`ALTER TABLE company_units ADD COLUMN color VARCHAR(16) NULL`);
+        }
+        _colorReady = true;
+    } catch (e) {
+        console.warn("ensureColorColumn failed:", e?.message || e);
+    }
+}
+
 // Приводим строку результата из БД к фронтовому формату
 const mapUnit = (r) => ({
     id: r.unit_id,
@@ -11,6 +39,7 @@ const mapUnit = (r) => ({
     phone: r.unit_phone,
     email: r.unit_email,
     role: r.unit_role,
+    color: r.color || null,
     active: !!r.is_active,
     lastEnter: r.unit_last_enter,
     createdAt: r.created_at,
@@ -69,6 +98,8 @@ export async function listUnits(req, res) {
         if (!ctx) return;
         const { companyId } = ctx;
 
+        await ensureColorColumn();
+
         const q = (req.query.q || "").trim().toLowerCase();
         let sql =
             "SELECT * FROM company_units WHERE company_id = ? ORDER BY unit_id DESC";
@@ -103,6 +134,7 @@ export async function createUnit(req, res) {
             role = "courier",
             password,
             active = true,
+            color,
         } = req.body || {};
 
         if (!nickname || !phone || !password) {
@@ -113,13 +145,17 @@ export async function createUnit(req, res) {
         if (!["courier", "admin"].includes(String(role)))
             return res.status(400).json({ ok: false, error: "Некорректная роль" });
 
+        await ensureColorColumn();
+        // цвет курьера: переданный (если валиден) или случайный из палитры
+        const finalColor = isHexColor(color) ? color : randomColor();
+
         const hash = await bcrypt.hash(String(password), SALT_ROUNDS);
 
         const [result] = await pool.query(
             `INSERT INTO company_units
-             (company_id, unit_nickname, unit_phone, unit_email, unit_role, unit_password_hash, is_active)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [companyId, nickname, phone, email, role, hash, active ? 1 : 0]
+             (company_id, unit_nickname, unit_phone, unit_email, unit_role, unit_password_hash, is_active, color)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [companyId, nickname, phone, email, role, hash, active ? 1 : 0, finalColor]
         );
 
         const [rows] = await pool.query(
@@ -145,7 +181,9 @@ export async function updateUnit(req, res) {
         const { companyId } = ctx;
 
         const id = Number(req.params.id);
-        const { nickname, phone, email, role, active, password } = req.body || {};
+        const { nickname, phone, email, role, active, password, color } = req.body || {};
+
+        await ensureColorColumn();
 
         const fields = [];
         const params = [];
@@ -153,6 +191,7 @@ export async function updateUnit(req, res) {
         if (nickname !== undefined) { fields.push("unit_nickname=?"); params.push(nickname); }
         if (phone !== undefined)    { fields.push("unit_phone=?");    params.push(phone); }
         if (email !== undefined)    { fields.push("unit_email=?");    params.push(email || null); }
+        if (color !== undefined && isHexColor(color)) { fields.push("color=?"); params.push(color); }
         if (role !== undefined) {
             if (!["courier", "admin"].includes(String(role)))
                 return res.status(400).json({ ok: false, error: "Некорректная роль" });
