@@ -280,6 +280,7 @@ function rowToMapDto(r) {
         customer: r.customer_name,
         phone: r.customer_phone,
         courierId: r.courier_unit_id ?? null,
+        courierName: r.courier_name ?? null,
         pickupId: r.pickup_unit_id ?? null,
         address: addr,
 
@@ -308,17 +309,19 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const { companyId } = ctx;
 
             const [rows] = await pool.query(
-                `SELECT order_id, status, order_type, customer_name, customer_phone,
-                courier_unit_id, pickup_unit_id,
-                address_street, address_house,
-                address_building, address_apartment,
-                address_floor, address_code,
-                address_lat, address_lng
-         FROM current_orders
-         WHERE company_id=?
-           AND status IN ('new','ready','enroute')
-           AND address_lat IS NOT NULL AND address_lng IS NOT NULL
-         ORDER BY created_at DESC
+                `SELECT co.order_id, co.status, co.order_type, co.customer_name, co.customer_phone,
+                co.courier_unit_id, co.pickup_unit_id,
+                co.address_street, co.address_house,
+                co.address_building, co.address_apartment,
+                co.address_floor, co.address_code,
+                co.address_lat, co.address_lng,
+                cu.unit_nickname AS courier_name
+         FROM current_orders co
+         LEFT JOIN company_units cu ON cu.unit_id = co.courier_unit_id
+         WHERE co.company_id=?
+           AND co.status IN ('new','ready','enroute')
+           AND co.address_lat IS NOT NULL AND co.address_lng IS NOT NULL
+         ORDER BY co.created_at DESC
          LIMIT 500`,
                 [companyId]
             );

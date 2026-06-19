@@ -315,5 +315,55 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
     }
   });
 
+  // ── PATCH /api/mobile-orders/:id/enroute ────────────────────────────────
+  // Курьер выезжает с заказом → статус 'enroute' + WS-оповещение.
+  router.patch("/:id/enroute", async (req, res) => {
+    try {
+      const ctx = await resolveCompanyContext(req, res);
+      if (!ctx) return;
+
+      const { companyId, user } = ctx;
+      const orderId   = Number(req.params.id);
+      const courierId = user.unitId || user.unit_id || user.userId || null;
+
+      const [[existing]] = await pool.query(
+        "SELECT order_id, courier_unit_id, status FROM current_orders WHERE company_id=? AND order_id=?",
+        [companyId, orderId]
+      );
+      if (!existing) return res.status(404).json({ ok: false, error: "Заказ не найден" });
+
+      // в путь может отправить только назначенный курьер
+      if (
+        !existing.courier_unit_id ||
+        String(existing.courier_unit_id) !== String(courierId)
+      ) {
+        return res.status(403).json({ ok: false, error: "Вы не можете изменить этот заказ" });
+      }
+
+      if (["completed", "cancelled"].includes(String(existing.status))) {
+        return res.status(409).json({ ok: false, error: "Заказ уже закрыт" });
+      }
+
+      await pool.query(
+        "UPDATE current_orders SET status='enroute', updated_at=NOW() WHERE company_id=? AND order_id=?",
+        [companyId, orderId]
+      );
+
+      const updatedRow = await fetchOrderById(companyId, orderId);
+      if (updatedRow) {
+        broadcastToCompany(companyId, {
+          type:      "order_updated",
+          order:     rowToMobileOrderDto(updatedRow),
+          companyId: companyId,
+        });
+      }
+
+      res.json({ ok: true, message: "Заказ в пути" });
+    } catch (e) {
+      console.error("enroute order error", e);
+      res.status(500).json({ ok: false, error: "Ошибка сервера" });
+    }
+  });
+
   return router;
 }
