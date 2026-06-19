@@ -245,8 +245,9 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
         return res.status(403).json({ ok: false, error: "Вы не можете отказаться от этого заказа" });
       }
 
+      // Снимаем курьера и возвращаем заказ в статус «новый»
       await pool.query(
-        "UPDATE current_orders SET courier_unit_id=NULL WHERE company_id=? AND order_id=?",
+        "UPDATE current_orders SET courier_unit_id=NULL, status='new', updated_at=NOW() WHERE company_id=? AND order_id=?",
         [companyId, orderId]
       );
 
