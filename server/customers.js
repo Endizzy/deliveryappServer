@@ -174,6 +174,7 @@ export default function createCustomersRouter() {
 
             const [rows] = await pool.query(
                 `SELECT order_id, order_no, order_seq, status, order_type,
+                        items_json, delivery_fee,
                         amount_subtotal, amount_discount, amount_total,
                         payment_method, created_at, scheduled_at, completed_at
                    FROM current_orders
@@ -182,12 +183,34 @@ export default function createCustomersRouter() {
                 [companyId, phone]
             );
 
+            const parseItems = (raw) => {
+                if (!raw) return [];
+                try {
+                    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+                    return Array.isArray(arr)
+                        ? arr.map((it) => ({
+                              id: it.id ?? null,
+                              name: it.name ?? "",
+                              price: Number(it.price) || 0,
+                              discount: Number(it.discount) || 0,
+                              finalPrice: Number(it.final_price ?? it.finalPrice) || 0,
+                              quantity: Number(it.quantity) || 0,
+                              lineTotal: Number(it.line_total ?? it.lineTotal) || 0,
+                          }))
+                        : [];
+                } catch {
+                    return [];
+                }
+            };
+
             const items = rows.map((r) => ({
                 id: r.order_id,
                 orderNo: r.order_no,
                 orderSeq: r.order_seq,
                 status: r.status,
                 orderType: r.order_type,
+                items: parseItems(r.items_json),
+                deliveryFee: Number(r.delivery_fee) || 0,
                 amountSubtotal: Number(r.amount_subtotal) || 0,
                 amountDiscount: Number(r.amount_discount) || 0,
                 amountTotal: Number(r.amount_total) || 0,
