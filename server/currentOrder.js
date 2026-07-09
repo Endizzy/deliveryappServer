@@ -1,6 +1,7 @@
 import express from "express";
 import pool from "./db.js";
 import crypto from "crypto";
+import { getCustomerDiscount } from "./customers.js";
 
 /** --- helpers --- */
 export async function resolveCompanyContext(req, res) {
@@ -36,7 +37,9 @@ function toMySQLDatetime(isoString) {
     return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
-function normalizeItemsAndAmounts(items, deliveryFee) {
+// orderDiscount (необяз.): { type: 'percent'|'fixed', value } — персональная
+// скидка клиента, применяется к сумме позиций ПОСЛЕ поштучных скидок.
+function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null) {
     const toCents = (amount) => {
         const s = typeof amount === "string" ? amount.trim().replace(",", ".") : amount;
         const n = Number(s);
@@ -78,9 +81,24 @@ function normalizeItemsAndAmounts(items, deliveryFee) {
 
     const subtotalCents = norm.reduce((s, r) => s + r._price_cents * r.quantity, 0);
     const itemsTotalCents = norm.reduce((s, r) => s + r._line_cents, 0);
-    const discountCents = subtotalCents - itemsTotalCents;
+
+    // Персональная скидка клиента поверх поштучных скидок
+    let orderDiscountCents = 0;
+    if (orderDiscount && Number(orderDiscount.value) > 0) {
+        const v = Number(orderDiscount.value) || 0;
+        if (orderDiscount.type === "fixed") {
+            orderDiscountCents = Math.min(toCents(v), itemsTotalCents);
+        } else {
+            const pct = Math.min(v, 100);
+            orderDiscountCents = Math.round((itemsTotalCents * pct) / 100);
+        }
+    }
+    const itemsAfterOrderDiscCents = Math.max(0, itemsTotalCents - orderDiscountCents);
+
+    // amount_discount = поштучные скидки + персональная скидка клиента
+    const discountCents = subtotalCents - itemsAfterOrderDiscCents;
     const deliveryFeeCents = toCents(deliveryFee);
-    const totalCents = itemsTotalCents + deliveryFeeCents;
+    const totalCents = itemsAfterOrderDiscCents + deliveryFeeCents;
 
     // не сохраняем служебные поля в items_json
     const itemsClean = norm.map(({ _price_cents, _line_cents, ...rest }) => rest);
@@ -91,6 +109,7 @@ function normalizeItemsAndAmounts(items, deliveryFee) {
         amount_discount: formatCents(discountCents),
         amount_total: formatCents(totalCents),
         delivery_fee: formatCents(deliveryFeeCents),
+        order_discount_cents: orderDiscountCents,
     };
 }
 
@@ -427,11 +446,23 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const { companyId, user } = ctx;
             const b = req.body || {};
 
-            const { items, amount_subtotal, amount_discount, amount_total, delivery_fee } =
-                normalizeItemsAndAmounts(b.selectedItems || [], b.deliveryFee);
-
             if (!b.customer || !b.phone)
                 return res.status(400).json({ ok: false, error: "Имя и телефон обязательны" });
+
+            // Персональная скидка клиента (по телефону, в рамках компании).
+            // Всегда применяется автоматически при создании заказа.
+            // Клиент может отключить её для конкретного заказа (applyCustomerDiscount=false).
+            let orderDiscount = null;
+            if (b.applyCustomerDiscount !== false) {
+                try {
+                    orderDiscount = await getCustomerDiscount(companyId, b.phone);
+                } catch (e) {
+                    console.warn("getCustomerDiscount failed:", e?.message ?? e);
+                }
+            }
+
+            const { items, amount_subtotal, amount_discount, amount_total, delivery_fee } =
+                normalizeItemsAndAmounts(b.selectedItems || [], b.deliveryFee, orderDiscount);
             if (!b.payment)
                 return res.status(400).json({ ok: false, error: "Способ оплаты обязателен" });
 
@@ -588,8 +619,18 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const id = Number(req.params.id);
             const b = req.body || {};
 
+            // Сохраняем персональную скидку клиента и при редактировании заказа
+            let orderDiscount = null;
+            if (b.applyCustomerDiscount !== false && b.phone) {
+                try {
+                    orderDiscount = await getCustomerDiscount(companyId, b.phone);
+                } catch (e) {
+                    console.warn("getCustomerDiscount (edit) failed:", e?.message ?? e);
+                }
+            }
+
             const { items, amount_subtotal, amount_discount, amount_total, delivery_fee } =
-                normalizeItemsAndAmounts(b.selectedItems || [], b.deliveryFee);
+                normalizeItemsAndAmounts(b.selectedItems || [], b.deliveryFee, orderDiscount);
 
             const payment_method = coercePaymentMethod(b.payment);
 
