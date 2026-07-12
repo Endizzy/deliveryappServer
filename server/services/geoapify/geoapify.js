@@ -4,23 +4,46 @@ export function buildAddressText(order) {
   // поддерживаем оба формата ключей:
   // - из БД: address_street/address_house/address_building/address_apartment
   // - из body: street/house/building/apart
-  const street = String(order.address_street ?? order.street ?? "").trim();
+  const streetRaw = String(order.address_street ?? order.street ?? "").trim();
   const house = String(order.address_house ?? order.house ?? "").trim();
   const building = String(order.address_building ?? order.building ?? "").trim();
   const apart = String(order.address_apartment ?? order.apart ?? "").trim();
 
-  if (!street) return "";
+  if (!streetRaw) return "";
 
-  // ВАЖНО: корпус берём ТОЛЬКО из поля "building", дом не парсим
-  const main =
+  // Поле "улица" может содержать район через запятую, напр. "Skudru iela, Dreiliņi".
+  // Разбиваем по ПЕРВОЙ запятой: до неё — улица, после — район (может быть несколько частей).
+  const commaIdx = streetRaw.indexOf(",");
+  const streetName =
+    commaIdx >= 0 ? streetRaw.slice(0, commaIdx).trim() : streetRaw;
+  const district =
+    commaIdx >= 0
+      ? streetRaw
+          .slice(commaIdx + 1)
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .join(", ")
+      : "";
+
+  // ВАЖНО: номер дома идёт СРАЗУ ПОСЛЕ названия улицы (до района),
+  // иначе geoapify привяжет номер к району, а не к улице.
+  // Корпус берём ТОЛЬКО из поля "building".
+  const streetPart =
     house
-      ? `${street} ${house}${building ? ` k-${building}` : ""}`
-      : street;
+      ? `${streetName} ${house}${building ? ` k-${building}` : ""}`
+      : streetName;
 
-  // Квартира (можешь убрать совсем, если не хочешь)
+  // Квартира
   const aptPart = apart ? ` dz. ${apart}` : "";
 
-  return `${main}${aptPart}, Riga, Latvia`.trim();
+  // Собираем: "<улица> <дом>[ dz. кв][, <район>], Latvia"
+  // Жёсткий "Riga" убран: район может быть вне городской черты (напр. Dreiliņi).
+  const parts = [`${streetPart}${aptPart}`.trim()];
+  if (district) parts.push(district);
+  parts.push("Latvia");
+
+  return parts.join(", ").trim();
 }
 
 export async function geoapifyGeocodeByText(text) {
