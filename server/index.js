@@ -39,6 +39,7 @@ import {
     geoapifyReverseGeocode,
     buildAddressText,
 } from "./services/geoapify/geoapify.js";
+import { etaOnCourierLocation } from "./services/eta/etaService.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -325,6 +326,7 @@ app.post('/api/location', (req, res) => {
 
     state.set(String(courierId), { ...payload, type: undefined });
     broadcastToAdmins(payload); // геолокация — только на карту у админов
+    etaOnCourierLocation(payload, broadcastToAdmins); // fire-and-forget, внутри троттлинг
     res.json({ ok: true });
 });
 
@@ -431,6 +433,7 @@ wss.on('connection', (ws) => {
 
             state.set(String(courierId), { ...payload, type: undefined });
             broadcastToAdmins(payload); // геолокация — только на карту у админов
+            etaOnCourierLocation(payload, broadcastToAdmins); // fire-and-forget, внутри троттлинг
         }
     });
 
