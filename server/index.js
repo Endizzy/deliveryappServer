@@ -293,8 +293,10 @@ function parseJsonSafe(data) {
     } catch { return null; }
 }
 
-// REST: принять обновление геолокации от мобильного приложения
-app.post('/api/location', (req, res) => {
+// REST: принять обновление геолокации от мобильного приложения.
+// authMiddleware обязателен: иначе разлогиненное приложение (или кто угодно)
+// может слать координаты, и на карте появляются «зомби»-курьеры.
+app.post('/api/location', authMiddleware, (req, res) => {
     const { courierId, lat, lng, speedKmh, orderId, status, timestamp, courierNickname } = req.body || {};
     if (typeof courierId === 'undefined' || typeof lat !== 'number' || typeof lng !== 'number') {
         return res.status(400).json({ ok: false, error: 'bad payload' });
@@ -324,11 +326,25 @@ app.post('/api/location', (req, res) => {
         return res.json({ ok: true });
     }
 
-    state.set(String(courierId), { ...payload, type: undefined });
+    state.set(String(courierId), { ...payload, type: undefined, receivedAt: Date.now() });
     broadcastToAdmins(payload); // геолокация — только на карту у админов
     etaOnCourierLocation(payload, broadcastToAdmins); // fire-and-forget, внутри троттлинг
     res.json({ ok: true });
 });
+
+// ─── TTL-очистка курьеров ────────────────────────────────────────────────────
+// Если от курьера нет координат дольше STALE_COURIER_MS (приложение убито,
+// потеря сети, разлогин без прощального off_shift) — убираем метку с карты.
+const STALE_COURIER_MS = Number(process.env.STALE_COURIER_MS || 5 * 60 * 1000);
+setInterval(() => {
+    const now = Date.now();
+    for (const [courierId, v] of state.entries()) {
+        if (now - (v?.receivedAt ?? 0) > STALE_COURIER_MS) {
+            state.delete(courierId);
+            broadcastToAdmins({ type: 'remove', courierId });
+        }
+    }
+}, 60000);
 
 // Demo CRUD
 app.get('/api/orders', (_, res) => res.json(Array.from(orders.values())));
@@ -431,7 +447,7 @@ wss.on('connection', (ws) => {
                 return;
             }
 
-            state.set(String(courierId), { ...payload, type: undefined });
+            state.set(String(courierId), { ...payload, type: undefined, receivedAt: Date.now() });
             broadcastToAdmins(payload); // геолокация — только на карту у админов
             etaOnCourierLocation(payload, broadcastToAdmins); // fire-and-forget, внутри троттлинг
         }
