@@ -11,37 +11,21 @@ const COLOR_PALETTE = [
 const isHexColor = (v) => typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v);
 const randomColor = () => COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)];
 
-// Ленивая авто-миграция колонки color (выполняется один раз)
-let _colorReady = false;
-export async function ensureColorColumn() {
-    if (_colorReady) return;
-    try {
-        const [rows] = await pool.query(
-            `SELECT COUNT(*) AS c FROM information_schema.columns
-              WHERE table_schema = DATABASE()
-                AND table_name = 'company_units'
-                AND column_name = 'color'`
-        );
-        if (!rows.length || Number(rows[0].c) === 0) {
-            await pool.query(`ALTER TABLE company_units ADD COLUMN color VARCHAR(16) NULL`);
-        }
-        _colorReady = true;
-    } catch (e) {
-        console.warn("ensureColorColumn failed:", e?.message || e);
-    }
-}
+// Персонал компании (курьеры и админы) теперь хранится в общей таблице users
+// (role IN ('admin','courier')). Логины owner/admin/courier/client — одна identity.
+const STAFF_ROLES = ["admin", "courier"];
 
-// Приводим строку результата из БД к фронтовому формату
+// Приводим строку users к фронтовому формату (совместимо со старым mapUnit)
 const mapUnit = (r) => ({
-    id: r.unit_id,
+    id: r.user_id,
     companyId: r.company_id,
-    nickname: r.unit_nickname,
-    phone: r.unit_phone,
-    email: r.unit_email,
-    role: r.unit_role,
+    nickname: r.nickname,
+    phone: r.phone,
+    email: r.email,
+    role: r.role,
     color: r.color || null,
     active: !!r.is_active,
-    lastEnter: r.unit_last_enter,
+    lastEnter: r.last_enter,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
 });
@@ -75,7 +59,6 @@ async function requireCompanyContext(req, res) {
         }
         companyId = companyId ?? rows[0].company_id;
         role = role || rows[0].role;
-        // чтобы дальше по пайплайну было в req.user
         req.user = { ...req.user, companyId, role, userId };
     }
 
@@ -90,6 +73,25 @@ async function requireCompanyContext(req, res) {
     return { companyId: Number(companyId), role: String(role).toLowerCase() };
 }
 
+// Проверка уникальности ника/телефона/email в рамках компании
+// (в users нет UNIQUE-ключей, поэтому валидируем на уровне приложения).
+async function findConflict(companyId, { nickname, phone, email }, excludeUserId = null) {
+    const clauses = [];
+    const params = [];
+    if (nickname) { clauses.push("nickname = ?"); params.push(nickname); }
+    if (phone) { clauses.push("phone = ?"); params.push(phone); }
+    if (email) { clauses.push("email = ?"); params.push(email); }
+    if (!clauses.length) return null;
+
+    let sql = `SELECT user_id FROM users WHERE company_id = ? AND (${clauses.join(" OR ")})`;
+    const p = [companyId, ...params];
+    if (excludeUserId) { sql += " AND user_id <> ?"; p.push(excludeUserId); }
+    sql += " LIMIT 1";
+
+    const [rows] = await pool.query(sql, p);
+    return rows[0] || null;
+}
+
 // ------- CRUD --------
 
 export async function listUnits(req, res) {
@@ -98,18 +100,19 @@ export async function listUnits(req, res) {
         if (!ctx) return;
         const { companyId } = ctx;
 
-        await ensureColorColumn();
-
         const q = (req.query.q || "").trim().toLowerCase();
         let sql =
-            "SELECT * FROM company_units WHERE company_id = ? ORDER BY unit_id DESC";
+            `SELECT * FROM users
+              WHERE company_id = ? AND role IN ('admin','courier')
+              ORDER BY user_id DESC`;
         let params = [companyId];
 
         if (q) {
             sql =
-                "SELECT * FROM company_units " +
-                "WHERE company_id = ? AND (LOWER(unit_nickname) LIKE ? OR LOWER(unit_phone) LIKE ? OR LOWER(unit_role) LIKE ?) " +
-                "ORDER BY unit_id DESC";
+                `SELECT * FROM users
+                  WHERE company_id = ? AND role IN ('admin','courier')
+                    AND (LOWER(nickname) LIKE ? OR LOWER(phone) LIKE ? OR LOWER(role) LIKE ?)
+                  ORDER BY user_id DESC`;
             params = [companyId, `%${q}%`, `%${q}%`, `%${q}%`];
         }
 
@@ -142,33 +145,35 @@ export async function createUnit(req, res) {
                 .status(400)
                 .json({ ok: false, error: "nickname, phone и password обязательны" });
         }
-        if (!["courier", "admin"].includes(String(role)))
+        if (!STAFF_ROLES.includes(String(role)))
             return res.status(400).json({ ok: false, error: "Некорректная роль" });
 
-        await ensureColorColumn();
-        // цвет курьера: переданный (если валиден) или случайный из палитры
-        const finalColor = isHexColor(color) ? color : randomColor();
-
-        const hash = await bcrypt.hash(String(password), SALT_ROUNDS);
-
-        const [result] = await pool.query(
-            `INSERT INTO company_units
-             (company_id, unit_nickname, unit_phone, unit_email, unit_role, unit_password_hash, is_active, color)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [companyId, nickname, phone, email, role, hash, active ? 1 : 0, finalColor]
-        );
-
-        const [rows] = await pool.query(
-            "SELECT * FROM company_units WHERE unit_id = ? AND company_id = ?",
-            [result.insertId, companyId]
-        );
-        res.status(201).json({ ok: true, item: mapUnit(rows[0]) });
-    } catch (e) {
-        if (e && e.code === "ER_DUP_ENTRY") {
+        const emailVal = email || null;
+        const conflict = await findConflict(companyId, { nickname, phone, email: emailVal });
+        if (conflict) {
             return res
                 .status(409)
                 .json({ ok: false, error: "Ник/телефон/email уже заняты в этой компании" });
         }
+
+        // цвет курьера: переданный (если валиден) или случайный из палитры
+        const finalColor = isHexColor(color) ? color : randomColor();
+        const hash = await bcrypt.hash(String(password), SALT_ROUNDS);
+
+        // first_name/last_name NOT NULL: имя = ник, фамилия пустая
+        const [result] = await pool.query(
+            `INSERT INTO users
+             (first_name, last_name, nickname, phone, email, role, password, is_active, color, company_id, created_at, updated_at)
+             VALUES (?, '', ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+            [nickname, nickname, phone, emailVal, role, hash, active ? 1 : 0, finalColor, companyId]
+        );
+
+        const [rows] = await pool.query(
+            "SELECT * FROM users WHERE user_id = ? AND company_id = ?",
+            [result.insertId, companyId]
+        );
+        res.status(201).json({ ok: true, item: mapUnit(rows[0]) });
+    } catch (e) {
         console.error("createUnit error:", e);
         res.status(500).json({ ok: false, error: "Ошибка сервера" });
     }
@@ -183,32 +188,52 @@ export async function updateUnit(req, res) {
         const id = Number(req.params.id);
         const { nickname, phone, email, role, active, password, color } = req.body || {};
 
-        await ensureColorColumn();
+        if (role !== undefined && !STAFF_ROLES.includes(String(role))) {
+            return res.status(400).json({ ok: false, error: "Некорректная роль" });
+        }
+
+        // проверка уникальности при смене ника/телефона/email
+        if (nickname !== undefined || phone !== undefined || email !== undefined) {
+            const conflict = await findConflict(
+                companyId,
+                {
+                    nickname: nickname !== undefined ? nickname : null,
+                    phone: phone !== undefined ? phone : null,
+                    email: email !== undefined ? (email || null) : null,
+                },
+                id
+            );
+            if (conflict) {
+                return res
+                    .status(409)
+                    .json({ ok: false, error: "Ник/телефон/email уже заняты в этой компании" });
+            }
+        }
 
         const fields = [];
         const params = [];
 
-        if (nickname !== undefined) { fields.push("unit_nickname=?"); params.push(nickname); }
-        if (phone !== undefined)    { fields.push("unit_phone=?");    params.push(phone); }
-        if (email !== undefined)    { fields.push("unit_email=?");    params.push(email || null); }
-        if (color !== undefined && isHexColor(color)) { fields.push("color=?"); params.push(color); }
-        if (role !== undefined) {
-            if (!["courier", "admin"].includes(String(role)))
-                return res.status(400).json({ ok: false, error: "Некорректная роль" });
-            fields.push("unit_role=?"); params.push(role);
+        if (nickname !== undefined) {
+            fields.push("nickname=?"); params.push(nickname);
+            // держим отображаемое имя в синхроне
+            fields.push("first_name=?"); params.push(nickname);
         }
-        if (active !== undefined)   { fields.push("is_active=?");     params.push(active ? 1 : 0); }
+        if (phone !== undefined)    { fields.push("phone=?"); params.push(phone); }
+        if (email !== undefined)    { fields.push("email=?"); params.push(email || null); }
+        if (color !== undefined && isHexColor(color)) { fields.push("color=?"); params.push(color); }
+        if (role !== undefined)     { fields.push("role=?"); params.push(role); }
+        if (active !== undefined)   { fields.push("is_active=?"); params.push(active ? 1 : 0); }
         if (password) {
             const hash = await bcrypt.hash(String(password), SALT_ROUNDS);
-            fields.push("unit_password_hash=?");
-            params.push(hash);
+            fields.push("password=?"); params.push(hash);
         }
 
         if (!fields.length) return res.json({ ok: true, item: null });
 
+        // WHERE ограничен персоналом — owner/client через этот эндпоинт не трогаем
         const sql =
-            `UPDATE company_units SET ${fields.join(", ")}, updated_at=CURRENT_TIMESTAMP
-             WHERE unit_id=? AND company_id=?`;
+            `UPDATE users SET ${fields.join(", ")}, updated_at=NOW()
+             WHERE user_id=? AND company_id=? AND role IN ('admin','courier')`;
         params.push(id, companyId);
 
         const [result] = await pool.query(sql, params);
@@ -216,16 +241,11 @@ export async function updateUnit(req, res) {
             return res.status(404).json({ ok: false, error: "Не найдено" });
 
         const [rows] = await pool.query(
-            "SELECT * FROM company_units WHERE unit_id=? AND company_id=?",
+            "SELECT * FROM users WHERE user_id=? AND company_id=?",
             [id, companyId]
         );
         res.json({ ok: true, item: rows.length ? mapUnit(rows[0]) : null });
     } catch (e) {
-        if (e && e.code === "ER_DUP_ENTRY") {
-            return res
-                .status(409)
-                .json({ ok: false, error: "Ник/телефон/email уже заняты в этой компании" });
-        }
         console.error("updateUnit error:", e);
         res.status(500).json({ ok: false, error: "Ошибка сервера" });
     }
@@ -239,8 +259,9 @@ export async function deleteUnit(req, res) {
 
         const id = Number(req.params.id);
 
+        // удаляем только персонал (admin/courier), не owner/client
         const [result] = await pool.query(
-            "DELETE FROM company_units WHERE unit_id=? AND company_id=?",
+            "DELETE FROM users WHERE user_id=? AND company_id=? AND role IN ('admin','courier')",
             [id, companyId]
         );
         if (result.affectedRows === 0)

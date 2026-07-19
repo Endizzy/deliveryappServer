@@ -334,9 +334,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 co.address_building, co.address_apartment,
                 co.address_floor, co.address_code,
                 co.address_lat, co.address_lng,
-                cu.unit_nickname AS courier_name
+                cu.nickname AS courier_name
          FROM current_orders co
-         LEFT JOIN company_units cu ON cu.unit_id = co.courier_unit_id
+         LEFT JOIN users cu ON cu.user_id = co.courier_unit_id
          WHERE co.company_id=?
            AND co.status IN ('new','ready','enroute')
            AND co.address_lat IS NOT NULL AND co.address_lng IS NOT NULL
@@ -381,11 +381,11 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const sql = `
         SELECT co.*,
-               cu1.unit_nickname AS courier_nickname,
-               cu2.unit_nickname AS pickup_nickname
+               cu1.nickname AS courier_nickname,
+               cu2.nickname AS pickup_nickname
         FROM current_orders co
-                 LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-                 LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                 LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
+                 LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
         WHERE ${where.join(" AND ")}
         ORDER BY co.created_at DESC, co.order_id DESC
         LIMIT 500`;
@@ -408,11 +408,11 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const sql = `
         SELECT co.*,
-               cu1.unit_nickname AS courier_nickname,
-               cu2.unit_nickname AS pickup_nickname
+               cu1.nickname AS courier_nickname,
+               cu2.nickname AS pickup_nickname
         FROM current_orders co
-                 LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-                 LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                 LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
+                 LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
         WHERE co.company_id=? AND co.order_id=? LIMIT 1`;
             const [rows] = await pool.query(sql, [companyId, id]);
             if (!rows.length) return res.status(404).json({ ok: false, error: "Заказ не найден" });
@@ -581,11 +581,11 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             // читаем уже обновлённый заказ (с координатами)
             const [rows] = await pool.query(
                 `SELECT co.*,
-                cu1.unit_nickname AS courier_nickname,
-                cu2.unit_nickname AS pickup_nickname
+                cu1.nickname AS courier_nickname,
+                cu2.nickname AS pickup_nickname
          FROM current_orders co
-                  LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-                  LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                  LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
+                  LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, order_id]
             );
@@ -679,11 +679,11 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const [rows] = await pool.query(
                 `SELECT co.*,
-                cu1.unit_nickname AS courier_nickname,
-                cu2.unit_nickname AS pickup_nickname
+                cu1.nickname AS courier_nickname,
+                cu2.nickname AS pickup_nickname
          FROM current_orders co
-                  LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-                  LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                  LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
+                  LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, id]
             );
@@ -724,11 +724,11 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const [rows] = await pool.query(
                 `SELECT co.*,
-                cu1.unit_nickname AS courier_nickname,
-                cu2.unit_nickname AS pickup_nickname
+                cu1.nickname AS courier_nickname,
+                cu2.nickname AS pickup_nickname
          FROM current_orders co
-                  LEFT JOIN company_units cu1 ON cu1.unit_id = co.courier_unit_id
-                  LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
+                  LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
+                  LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, id]
             );

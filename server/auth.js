@@ -73,6 +73,11 @@ export async function login(req, res) {
             return res.status(401).json({ error: "Неверный email или пароль" });
         }
 
+        // Курьерам веб-клиент недоступен — они входят только в мобильное приложение
+        if (user.role === "courier") {
+            return res.status(403).json({ error: "Курьеры входят через мобильное приложение" });
+        }
+
         // Check if 2FA is enabled for this user
         if (user.totp_enabled) {
             // Generate a temporary token for 2FA verification
@@ -117,10 +122,11 @@ export async function courierlogin(req, res) {
 
         const identifier = String(unit_email).trim();
 
+        // Курьеры теперь живут в users (role='courier'). Логин по email ИЛИ телефону.
         const [rows] = await pool.query(
-            `SELECT unit_id, unit_nickname, unit_role, company_id, unit_password_hash, is_active
-         FROM company_units
-        WHERE unit_email = ? OR unit_phone = ? AND unit_role = 'courier'
+            `SELECT user_id, nickname, role, company_id, password, is_active
+         FROM users
+        WHERE (email = ? OR phone = ?) AND role = 'courier'
         LIMIT 1`,
             [identifier, identifier]
         );
@@ -135,23 +141,25 @@ export async function courierlogin(req, res) {
             return res.status(403).json({ error: "Учётная запись деактивирована" });
         }
 
-        const valid = await bcrypt.compare(unit_password, user.unit_password_hash);
+        const valid = await bcrypt.compare(unit_password, user.password);
         if (!valid) {
             return res.status(401).json({ error: "Неверный email или пароль" });
         }
 
+        // Claim остаётся прежним (userId = user_id) — мобильное приложение
+        // читает id из userId, семантика не меняется.
         const token = jwt.sign(
             {
-                userId: user.unit_id,
-                role: user.unit_role,
+                userId: user.user_id,
+                role: user.role,
                 companyId: user.company_id,
-                unitNickname: typeof user.unit_nickname === 'string' ? user.unit_nickname : null
+                unitNickname: typeof user.nickname === 'string' ? user.nickname : null
             },
             JWT_SECRET,
             { expiresIn: "14h" }
         );
 
-        console.log(`[courierlogin] Created token for unit_id=${user.unit_id}, unit_nickname=${user.unit_nickname}`);
+        console.log(`[courierlogin] Created token for user_id=${user.user_id}, nickname=${user.nickname}`);
 
         return res.json({ ok: true, token });
     } catch (err) {

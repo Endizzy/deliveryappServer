@@ -1,5 +1,4 @@
 import pool from "./db.js";
-import { ensureColorColumn } from "./companyUnits.js";
 
 async function resolveCompanyContext(req, res) {
     const u = req.user || {};
@@ -28,17 +27,15 @@ export async function getCouriers(req, res) {
         if (!ctx) return;
         const { companyId } = ctx;
 
-        await ensureColorColumn();
-
         const [rows] = await pool.query(
-            `SELECT unit_id, unit_nickname, color
-             FROM company_units
-             WHERE company_id=? AND unit_role='courier' AND is_active=1
-             ORDER BY unit_nickname ASC`,
+            `SELECT user_id, nickname, color
+             FROM users
+             WHERE company_id=? AND role='courier' AND is_active=1
+             ORDER BY nickname ASC`,
             [companyId]
         );
 
-        res.json({ ok: true, items: rows.map(r => ({ id: r.unit_id, nickname: r.unit_nickname, color: r.color || null })) });
+        res.json({ ok: true, items: rows.map(r => ({ id: r.user_id, nickname: r.nickname, color: r.color || null })) });
     } catch (e) {
         console.error("getCouriers error:", e);
         res.status(500).json({ ok: false, error: "Ошибка сервера" });
@@ -52,14 +49,14 @@ export async function getPickupPoints(req, res) {
         const { companyId } = ctx;
 
         const [rows] = await pool.query(
-            `SELECT unit_id, unit_nickname
-         FROM company_units
-        WHERE company_id=? AND unit_role='admin' AND is_active=1
-        ORDER BY unit_nickname ASC`,
+            `SELECT user_id, nickname
+         FROM users
+        WHERE company_id=? AND role='admin' AND is_active=1
+        ORDER BY nickname ASC`,
             [companyId]
         );
 
-        res.json({ ok: true, items: rows.map(r => ({ id: r.unit_id, nickname: r.unit_nickname })) });
+        res.json({ ok: true, items: rows.map(r => ({ id: r.user_id, nickname: r.nickname })) });
     } catch (e) {
         console.error("getPickupPoints error:", e);
         res.status(500).json({ ok: false, error: "Ошибка сервера" });

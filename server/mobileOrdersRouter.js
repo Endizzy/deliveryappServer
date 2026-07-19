@@ -63,11 +63,11 @@ function safeParseItemsJSON(v) {
 async function fetchOrderById(companyId, orderId) {
   const [rows] = await pool.query(
     `SELECT co.*,
-            cu2.unit_nickname AS pickup_nickname,
-            cu3.unit_nickname AS courier_name
+            cu2.nickname AS pickup_nickname,
+            cu3.nickname AS courier_name
      FROM current_orders co
-     LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-     LEFT JOIN company_units cu3 ON cu3.unit_id = co.courier_unit_id
+     LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+     LEFT JOIN users cu3 ON cu3.user_id = co.courier_unit_id
      WHERE co.company_id = ? AND co.order_id = ?
      LIMIT 1`,
     [companyId, orderId]
@@ -115,11 +115,11 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
 
       const [rows] = await pool.query(
         `SELECT co.*,
-                cu2.unit_nickname AS pickup_nickname,
-                cu3.unit_nickname AS courier_name
+                cu2.nickname AS pickup_nickname,
+                cu3.nickname AS courier_name
          FROM current_orders co
-         LEFT JOIN company_units cu2 ON cu2.unit_id = co.pickup_unit_id
-         LEFT JOIN company_units cu3 ON cu3.unit_id = co.courier_unit_id
+         LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+         LEFT JOIN users cu3 ON cu3.user_id = co.courier_unit_id
          WHERE ${where.join(" AND ")}
          ORDER BY co.created_at DESC, co.order_id DESC
          LIMIT 100`,

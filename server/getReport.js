@@ -52,8 +52,8 @@ export async function getReport(req, res) {
           GROUP BY co.order_id
       )
       SELECT
-          cu.unit_id AS unit_id,
-          cu.unit_nickname AS unit_nickname,
+          cu.user_id AS unit_id,
+          cu.nickname AS unit_nickname,
           cu.company_id,
           COUNT(os.order_id) AS total_orders,
           COALESCE(SUM(os.amount_total), 0) AS total_sum,
@@ -62,14 +62,14 @@ export async function getReport(req, res) {
           COALESCE(SUM(CASE WHEN os.payment_method = 'wire' THEN os.amount_total ELSE 0 END), 0) AS total_wire_sum,
           COALESCE(SUM(os.items_count), 0) AS total_items
       FROM
-          company_units cu
+          users cu
       LEFT JOIN
-          OrderStats os ON cu.unit_id = os.courier_unit_id
+          OrderStats os ON cu.user_id = os.courier_unit_id
       WHERE
           cu.company_id = ?
-          AND cu.unit_role = 'courier'
+          AND cu.role = 'courier'
       GROUP BY
-          cu.unit_id
+          cu.user_id
 
       UNION ALL
 
@@ -86,7 +86,7 @@ export async function getReport(req, res) {
       FROM OrderStats os
       WHERE os.courier_unit_id IS NULL
          OR os.courier_unit_id NOT IN (
-             SELECT unit_id FROM company_units WHERE company_id = ? AND unit_role = 'courier'
+             SELECT user_id FROM users WHERE company_id = ? AND role = 'courier'
          )
       HAVING COUNT(os.order_id) > 0`,
       [companyId, startDate, endDate, companyId, companyId, companyId]
@@ -133,18 +133,18 @@ export async function getMobileTodayReport(req, res) {
           GROUP BY co.order_id
       )
       SELECT
-          cu.unit_id AS unit_id,
-          cu.unit_nickname AS unit_nickname,
+          cu.user_id AS unit_id,
+          cu.nickname AS unit_nickname,
           COUNT(os.order_id) AS total_orders,
           COALESCE(SUM(os.amount_total), 0) AS total_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'cash' THEN os.amount_total ELSE 0 END), 0) AS total_cash_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'card' THEN os.amount_total ELSE 0 END), 0) AS total_card_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'wire' THEN os.amount_total ELSE 0 END), 0) AS total_wire_sum,
           COALESCE(SUM(os.items_count), 0) AS total_items
-      FROM company_units cu
-      LEFT JOIN OrderStats os ON cu.unit_id = os.courier_unit_id
-      WHERE cu.company_id = ? AND cu.unit_role = 'courier'
-      GROUP BY cu.unit_id
+      FROM users cu
+      LEFT JOIN OrderStats os ON cu.user_id = os.courier_unit_id
+      WHERE cu.company_id = ? AND cu.role = 'courier'
+      GROUP BY cu.user_id
 
       UNION ALL
 
@@ -160,7 +160,7 @@ export async function getMobileTodayReport(req, res) {
       FROM OrderStats os
       WHERE os.courier_unit_id IS NULL
          OR os.courier_unit_id NOT IN (
-             SELECT unit_id FROM company_units WHERE company_id = ? AND unit_role = 'courier'
+             SELECT user_id FROM users WHERE company_id = ? AND role = 'courier'
          )
       HAVING COUNT(os.order_id) > 0`,
       [companyId, start, end, companyId, companyId]
