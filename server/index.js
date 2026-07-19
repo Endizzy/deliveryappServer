@@ -298,7 +298,21 @@ function parseJsonSafe(data) {
 // может слать координаты, и на карте появляются «зомби»-курьеры.
 app.post('/api/location', authMiddleware, (req, res) => {
     const { courierId, lat, lng, speedKmh, orderId, status, timestamp, courierNickname } = req.body || {};
-    if (typeof courierId === 'undefined' || typeof lat !== 'number' || typeof lng !== 'number') {
+
+    if (typeof courierId === 'undefined') {
+        return res.status(400).json({ ok: false, error: 'bad payload' });
+    }
+
+    // off_shift (конец смены / выход) обрабатываем СРАЗУ и БЕЗ координат —
+    // курьер должен исчезнуть с карты мгновенно, даже если позиции нет.
+    if (status === 'off_shift') {
+        try { state.delete(String(courierId)); } catch {}
+        broadcastToAdmins({ type: 'remove', courierId: String(courierId) });
+        return res.json({ ok: true });
+    }
+
+    // Для обычного апдейта координаты обязательны.
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
         return res.status(400).json({ ok: false, error: 'bad payload' });
     }
 
@@ -319,12 +333,6 @@ app.post('/api/location', authMiddleware, (req, res) => {
         timestamp:       timestamp || new Date().toISOString(),
         courierNickname: nickname,
     };
-
-    if (payload.status === 'off_shift') {
-        try { state.delete(String(courierId)); } catch {}
-        broadcastToAdmins({ type: 'remove', courierId: String(courierId) });
-        return res.json({ ok: true });
-    }
 
     state.set(String(courierId), { ...payload, type: undefined, receivedAt: Date.now() });
     broadcastToAdmins(payload); // геолокация — только на карту у админов
