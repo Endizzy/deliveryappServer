@@ -8,6 +8,7 @@ import { getCompany } from "./getCompany.js";
 import menuApi from "./menuApi.js";
 import { getCustomerAddressByPhone } from "./customerAddressByPhone.js";
 import { WebSocketServer } from 'ws';
+import jwt from 'jsonwebtoken';
 import { activatePreorders } from "./jobs/activatePreorders.js";
 import {
     register,
@@ -44,6 +45,8 @@ import { etaOnCourierLocation } from "./services/eta/etaService.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 const PORT       = process.env.PORT || 4000;
+// Тот же секрет, что в auth.js — WS-hello проверяется тем же JWT
+const JWT_SECRET = process.env.JWT_SECRET || "super_secret_key";
 const app        = express();
 
 // ─── CORS / static ───────────────────────────────────────────────────────────
@@ -83,6 +86,13 @@ app.post("/api/auth/2fa/verify-login", verifyLogin2FA);
 // WSS объявляем заранее, чтобы broadcast-функции были доступны до регистрации роутов
 let wss;
 
+// Безопасная отправка: исключение на одном сокете не должно прервать рассылку остальным
+function safeSend(ws, msg) {
+    try { ws.send(msg); } catch (e) {
+        console.warn('WS send failed:', e?.message ?? e);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // broadcastToAdmins
 // Рассылает ТОЛЬКО администраторам. Используется для геолокации курьеров (карта).
@@ -94,9 +104,9 @@ function broadcastToAdmins(payload) {
         if (ws.readyState !== ws.OPEN) return;
         if (ws.clientType !== 'admin') return;
         if (typeof payload?.companyId === 'number') {
-            if (ws.companyId === payload.companyId) ws.send(msg);
+            if (ws.companyId === payload.companyId) safeSend(ws, msg);
         } else {
-            ws.send(msg);
+            safeSend(ws, msg);
         }
     });
 }
@@ -120,9 +130,9 @@ function broadcastToAll(payload) {
     wss.clients.forEach((ws) => {
         if (ws.readyState !== ws.OPEN) return;
         if (typeof cid === 'number') {
-            if (ws.companyId === cid) ws.send(msg);
+            if (ws.companyId === cid) safeSend(ws, msg);
         } else {
-            ws.send(msg);
+            safeSend(ws, msg);
         }
     });
 }
@@ -138,7 +148,7 @@ function broadcastToCompany(companyId, payload) {
     wss.clients.forEach((ws) => {
         if (ws.readyState !== ws.OPEN) return;
         if (typeof companyId === 'number' && ws.companyId === companyId) {
-            ws.send(msg);
+            safeSend(ws, msg);
         }
     });
 }
@@ -279,11 +289,9 @@ app.post("/api/staff",        authMiddleware, createUnit);
 app.put("/api/staff/:id",     authMiddleware, updateUnit);
 app.delete("/api/staff/:id",  authMiddleware, deleteUnit);
 
-// ─── Demo / Location state ───────────────────────────────────────────────────
+// ─── Location state ──────────────────────────────────────────────────────────
 const state     = new Map(); // courierId → { lat,lng,speedKmh,timestamp,orderId,status,courierNickname }
-const orders    = new Map(); // demo-orders
 const unitsMeta = new Map(); // courierId → courierNickname
-let nextOrderId = 1;
 
 function parseJsonSafe(data) {
     try {
@@ -354,35 +362,6 @@ setInterval(() => {
     }
 }, 60000);
 
-// Demo CRUD
-app.get('/api/orders', (_, res) => res.json(Array.from(orders.values())));
-
-app.post('/api/orders', (req, res) => {
-    const { title } = req.body;
-    if (!title) return res.status(400).json({ error: 'title required' });
-    const order = { id: nextOrderId++, title, status: 'new', courierId: null };
-    orders.set(order.id, order);
-    res.json(order);
-    broadcastToAdmins({ type: 'order_created', order });
-});
-
-app.put('/api/orders/:id', (req, res) => {
-    const id = Number(req.params.id);
-    if (!orders.has(id)) return res.status(404).json({ error: 'not found' });
-    const updated = { ...orders.get(id), ...req.body, id };
-    orders.set(id, updated);
-    res.json(updated);
-    broadcastToAdmins({ type: 'order_updated', order: updated });
-});
-
-app.delete('/api/orders/:id', (req, res) => {
-    const id = Number(req.params.id);
-    if (!orders.has(id)) return res.status(404).json({ error: 'not found' });
-    orders.delete(id);
-    res.json({ ok: true });
-    broadcastToAdmins({ type: 'order_deleted', orderId: id });
-});
-
 // ─── WebSocket Server ────────────────────────────────────────────────────────
 const server = http.createServer(app);
 wss = new WebSocketServer({ server });
@@ -392,21 +371,38 @@ wss.on('connection', (ws) => {
     ws.companyId  = null;
     ws.courierId  = null;
 
+    // Heartbeat: считаем соединение живым, пока приходят pong (или любые данные)
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
+
     ws.on('message', (raw) => {
+        ws.isAlive = true; // любое сообщение — признак живого соединения
         const data = parseJsonSafe(raw);
         if (!data) return;
 
-        // ── Hello: регистрация клиента ──────────────────────────────────
+        // ── Hello: регистрация клиента (только по валидному JWT) ────────
         if (data.type === 'hello') {
-            ws.clientType = data.role === 'admin' ? 'admin' : 'courier';
+            let payload;
+            try {
+                payload = jwt.verify(String(data.token || ''), JWT_SECRET);
+            } catch {
+                // Невалидный/просроченный/отсутствующий токен — клиент должен
+                // перелогиниться, а не реконнектиться (код 4401).
+                try { ws.close(4401, 'unauthorized'); } catch {}
+                return;
+            }
 
-            const cid    = Number(data.companyId);
+            // Роль и companyId берём ТОЛЬКО из токена, а не со слов клиента
+            ws.clientType = payload.role === 'courier' ? 'courier' : 'admin';
+
+            const cid    = Number(payload.companyId);
             ws.companyId = Number.isFinite(cid) ? cid : null;
 
-            if (ws.clientType === 'courier' && typeof data.courierId !== 'undefined') {
-                ws.courierId = String(data.courierId);
-                if (data.courierNickname) {
-                    try { unitsMeta.set(String(data.courierId), String(data.courierNickname)); } catch {}
+            if (ws.clientType === 'courier') {
+                ws.courierId = String(payload.userId);
+                const nick = payload.unitNickname ?? data.courierNickname;
+                if (nick) {
+                    try { unitsMeta.set(ws.courierId, String(nick)); } catch {}
                 }
             }
 
@@ -422,11 +418,15 @@ wss.on('connection', (ws) => {
                     timestamp:       v.timestamp ?? new Date().toISOString(),
                     courierNickname: v.courierNickname ?? unitsMeta.get(String(courierId)) ?? null,
                 }));
-                ws.send(JSON.stringify({ type: 'snapshot', items: snapshot }));
-                ws.send(JSON.stringify({ type: 'orders_snapshot', items: Array.from(orders.values()) }));
+                safeSend(ws, JSON.stringify({ type: 'snapshot', items: snapshot }));
             }
+
+            safeSend(ws, JSON.stringify({ type: 'hello_ok' }));
             return;
         }
+
+        // До успешного hello никакие другие сообщения не принимаем
+        if (ws.clientType === 'unknown') return;
 
         // ── Локация от курьера по WS ─────────────────────────────────────
         if (data.type === 'location' && ws.clientType !== 'admin') {
@@ -471,6 +471,26 @@ wss.on('connection', (ws) => {
         console.warn('WS connection error', err?.message ?? err);
     });
 });
+
+// ─── WS Heartbeat ────────────────────────────────────────────────────────────
+// 1) Обнаруживает полумёртвые соединения (смена сети, обрыв без FIN):
+//    нет pong за цикл → terminate, клиент получает onclose и реконнектится.
+// 2) Генерирует трафик чаще, чем idle-таймаут Cloudflare (~100 c),
+//    иначе туннель молча режет «тихие» соединения.
+// Браузер и React Native отвечают pong на протокольный ping автоматически.
+const WS_HEARTBEAT_MS = Number(process.env.WS_HEARTBEAT_MS || 30_000);
+const heartbeatTimer = setInterval(() => {
+    wss.clients.forEach((ws) => {
+        if (ws.isAlive === false) {
+            try { ws.terminate(); } catch {}
+            return;
+        }
+        ws.isAlive = false;
+        try { ws.ping(); } catch {}
+    });
+}, WS_HEARTBEAT_MS);
+
+wss.on('close', () => clearInterval(heartbeatTimer));
 
 // ─── Cron Job: Активация предзаказов каждую минуту ──────────────────────────
 // Предзаказы становятся активными за 2 часа до scheduled_at
