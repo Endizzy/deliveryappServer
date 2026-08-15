@@ -650,7 +650,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 [
                     b.orderType || "active",
                     b.status || "new",
-                    b.scheduledAt || null,
+                    toMySQLDatetime(b.scheduledAt),
                     b.courierId || null,
                     b.pickupId || null,
                     payment_method,
