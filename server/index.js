@@ -30,6 +30,7 @@ import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js
 import currentOrdersRouter from "./currentOrder.js";
 import deliveryZonesRouter from "./deliveryZones.js";
 import createCustomersRouter from "./customers.js";
+import { getInvoiceSettings, saveInvoiceSettings } from "./invoiceSettings.js";
 import {
     savePushToken,
     deletePushTokensByUnit,
@@ -257,6 +258,10 @@ app.use("/api/delivery-zones", authMiddleware, deliveryZonesRouter);
 
 // ─── Customers (контроль клиентов, admin) ────────────────────────────────────
 app.use("/api/customers", authMiddleware, createCustomersRouter());
+
+// ─── Invoice settings (реквизиты накладной, per-company) ─────────────────────
+app.get("/api/invoice-settings", authMiddleware, getInvoiceSettings);
+app.post("/api/invoice-settings", authMiddleware, saveInvoiceSettings);
 
 // ─── Mobile Orders (couriers) ────────────────────────────────────────────────
 // broadcastToCompany — для assign/release (два аргумента: companyId, payload)
