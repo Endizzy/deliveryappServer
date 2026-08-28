@@ -433,6 +433,16 @@ wss.on('connection', (ws) => {
         // До успешного hello никакие другие сообщения не принимаем
         if (ws.clientType === 'unknown') return;
 
+        // ── App-level ping ───────────────────────────────────────────────
+        // Протокольный ping/pong (ws.ping) обрабатывается нативным слоем и
+        // невидим для JS в React Native, поэтому мобильный клиент не может
+        // по нему судить о живости канала. Отвечаем на JSON-ping: пришедший
+        // pong — единственное для телефона доказательство, что связь есть.
+        if (data.type === 'ping') {
+            safeSend(ws, JSON.stringify({ type: 'pong', ts: data.ts ?? null }));
+            return;
+        }
+
         // ── Локация от курьера по WS ─────────────────────────────────────
         if (data.type === 'location' && ws.clientType !== 'admin') {
             const { courierId, lat, lng, speedKmh, orderId, status, timestamp, courierNickname } = data;
