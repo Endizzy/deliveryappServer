@@ -178,7 +178,12 @@ export function authMiddleware(req, res, next) {
     try {
         const decoded = jwt.verify(token, JWT_SECRET);
         req.user = decoded; // { userId, role, companyId, ... }
-        console.log(`[authMiddleware] Decoded token:`, decoded);
+        // Печать токена на каждый запрос забивала лог и мешала читать
+        // [push]/[ws]-события. При необходимости включается точечно:
+        //   DEBUG_AUTH=1 docker compose up -d server
+        if (process.env.DEBUG_AUTH === '1') {
+            console.log(`[auth] user=${decoded.userId} role=${decoded.role} company=${decoded.companyId}`);
+        }
         next();
     } catch (err) {
         return res.status(401).json({ error: "Невалидный или просроченный токен" });

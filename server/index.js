@@ -89,9 +89,36 @@ let wss;
 
 // Безопасная отправка: исключение на одном сокете не должно прервать рассылку остальным
 function safeSend(ws, msg) {
-    try { ws.send(msg); } catch (e) {
-        console.warn('WS send failed:', e?.message ?? e);
+    try { ws.send(msg); return true; } catch (e) {
+        console.warn('[ws] send failed:', e?.message ?? e);
+        return false;
     }
+}
+
+// ─── Логирование WS ──────────────────────────────────────────────────────────
+// Цель — по логу отвечать на вопрос «почему курьер не увидел заказ»:
+// кто был подключён в момент рассылки и скольким она реально ушла.
+// Геолокация (location/eta) не логируется — она идёт непрерывным потоком.
+function wsClientsSummary() {
+    let admins = 0, couriers = 0;
+    if (!wss) return { admins, couriers };
+    for (const c of wss.clients) {
+        if (c.readyState !== c.OPEN) continue;
+        if (c.clientType === 'admin') admins++;
+        else if (c.clientType === 'courier') couriers++;
+    }
+    return { admins, couriers };
+}
+
+function logBroadcast(payload, sent) {
+    const type = payload?.type;
+    if (typeof type !== 'string' || !type.startsWith('order_')) return; // без шума от location/eta
+    const { admins, couriers } = wsClientsSummary();
+    const orderId = payload?.order?.id ?? payload?.orderId ?? '?';
+    console.log(
+        `[ws] broadcast ${type} order=${orderId} company=${payload?.companyId ?? '-'} ` +
+        `→ доставлено ${sent} (онлайн: ${admins} admin, ${couriers} courier)`
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -128,14 +155,16 @@ function broadcastToAll(payload) {
     const msg = JSON.stringify(payload);
     if (!wss) return;
     const cid = payload?.companyId;
+    let sent = 0;
     wss.clients.forEach((ws) => {
         if (ws.readyState !== ws.OPEN) return;
         if (typeof cid === 'number') {
-            if (ws.companyId === cid) safeSend(ws, msg);
-        } else {
-            safeSend(ws, msg);
+            if (ws.companyId === cid && safeSend(ws, msg)) sent++;
+        } else if (safeSend(ws, msg)) {
+            sent++;
         }
     });
+    logBroadcast(payload, sent);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -146,12 +175,14 @@ function broadcastToAll(payload) {
 function broadcastToCompany(companyId, payload) {
     const msg = JSON.stringify(payload);
     if (!wss) return;
+    let sent = 0;
     wss.clients.forEach((ws) => {
         if (ws.readyState !== ws.OPEN) return;
         if (typeof companyId === 'number' && ws.companyId === companyId) {
-            safeSend(ws, msg);
+            if (safeSend(ws, msg)) sent++;
         }
     });
+    logBroadcast({ ...payload, companyId }, sent);
 }
 
 // ─── Current Orders (admin) ──────────────────────────────────────────────────
@@ -390,9 +421,13 @@ wss.on('connection', (ws) => {
             let payload;
             try {
                 payload = jwt.verify(String(data.token || ''), JWT_SECRET);
-            } catch {
+            } catch (err) {
                 // Невалидный/просроченный/отсутствующий токен — клиент должен
                 // перелогиниться, а не реконнектиться (код 4401).
+                const why = !data.token ? 'нет токена'
+                    : err?.name === 'TokenExpiredError' ? 'токен просрочен'
+                    : 'токен невалиден';
+                console.warn(`[ws] ✗ hello отклонён (${why}) role=${data.role ?? '-'}`);
                 try { ws.close(4401, 'unauthorized'); } catch {}
                 return;
             }
@@ -427,6 +462,17 @@ wss.on('connection', (ws) => {
             }
 
             safeSend(ws, JSON.stringify({ type: 'hello_ok' }));
+
+            {
+                const { admins, couriers } = wsClientsSummary();
+                const who = ws.clientType === 'courier'
+                    ? `courier=${ws.courierId}${payload.unitNickname ? ` (${payload.unitNickname})` : ''}`
+                    : `admin user=${payload.userId}`;
+                console.log(
+                    `[ws] + подключён ${who} company=${ws.companyId} ` +
+                    `(онлайн: ${admins} admin, ${couriers} courier)`
+                );
+            }
             return;
         }
 
@@ -476,14 +522,25 @@ wss.on('connection', (ws) => {
         }
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code) => {
+        // Логируем только клиентов, прошедших hello: неудачные попытки уже
+        // залогированы выше, а «пустые» подключения шума не стоят.
+        if (ws.clientType !== 'unknown') {
+            const who = ws.clientType === 'courier' ? `courier=${ws.courierId}` : 'admin';
+            // 1000/1005 — штатное закрытие, 1006 — обрыв связи, 4401 — отказ авторизации
+            const reason = code === 1006 ? 'обрыв связи'
+                : code === 4401 ? 'отказ авторизации'
+                : ws.killedByHeartbeat ? 'не отвечал на ping'
+                : 'штатно';
+            console.log(`[ws] − отключён ${who} company=${ws.companyId} code=${code} (${reason})`);
+        }
         ws.clientType = 'unknown';
         ws.companyId  = null;
         ws.courierId  = null;
     });
 
     ws.on('error', (err) => {
-        console.warn('WS connection error', err?.message ?? err);
+        console.warn('[ws] connection error:', err?.message ?? err);
     });
 });
 
@@ -497,6 +554,11 @@ const WS_HEARTBEAT_MS = Number(process.env.WS_HEARTBEAT_MS || 30_000);
 const heartbeatTimer = setInterval(() => {
     wss.clients.forEach((ws) => {
         if (ws.isAlive === false) {
+            if (ws.clientType !== 'unknown') {
+                const who = ws.clientType === 'courier' ? `courier=${ws.courierId}` : 'admin';
+                console.warn(`[ws] ✗ мёртвое соединение ${who} company=${ws.companyId} — terminate`);
+            }
+            ws.killedByHeartbeat = true; // для расшифровки причины в обработчике close
             try { ws.terminate(); } catch {}
             return;
         }
