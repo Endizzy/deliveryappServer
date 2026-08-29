@@ -634,6 +634,19 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const payment_method = coercePaymentMethod(b.payment);
 
+            // Кто вёз заказ до правки: нужно, чтобы отличить «назначили курьера»
+            // от обычного редактирования и уведомить нового исполнителя.
+            let prevCourierId = null;
+            try {
+                const [[prev]] = await pool.query(
+                    "SELECT courier_unit_id FROM current_orders WHERE company_id=? AND order_id=? LIMIT 1",
+                    [companyId, id]
+                );
+                prevCourierId = prev?.courier_unit_id ?? null;
+            } catch (e) {
+                console.warn("[order] read prev courier failed:", e?.message ?? e);
+            }
+
             await ensureCompletedAtColumn();
             await pool.query(
                 `UPDATE current_orders
@@ -694,7 +707,21 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             res.json({ ok: true, item });
 
             if (typeof broadcastToAdmins === "function") {
-                broadcastToAdmins({ type: "order_updated", companyId, order: item });
+                // courierAssigned — признак того, что заказ только что закрепили
+                // за курьером (или передали другому). По нему index.js отправляет
+                // адресный push, а приложение курьера даёт звук и баннер:
+                // без него назначение существующего заказа проходило незаметно.
+                const newCourierId = item.courierId ?? null;
+                const courierAssigned =
+                    newCourierId != null && String(newCourierId) !== String(prevCourierId ?? "");
+
+                broadcastToAdmins({
+                    type: "order_updated",
+                    companyId,
+                    order: item,
+                    courierAssigned,
+                    prevCourierId: prevCourierId ?? null,
+                });
             }
         } catch (e) {
             console.error("update current order", e);

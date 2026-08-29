@@ -194,8 +194,22 @@ function broadcastToCompany(companyId, payload) {
 // не меняем — currentOrder.js по-прежнему вызывает один аргумент.
 function broadcastAndPush(payload) {
     broadcastToAll(payload);
-    if (payload?.type === "order_created" && typeof payload.companyId === "number") {
+    if (typeof payload?.companyId !== "number") return;
+
+    if (payload.type === "order_created") {
+        // назначенный заказ уйдёт только своему курьеру, свободный — всем
         sendOrderPush(payload.companyId, payload.order);
+        return;
+    }
+
+    // Заказ существовал и только что закреплён за курьером (админ выбрал
+    // исполнителя в EditOrder). Раньше такое назначение проходило совсем
+    // незаметно: push слался только при создании заказа.
+    if (payload.type === "order_updated" && payload.courierAssigned) {
+        const courierId = payload.order?.courierId ?? null;
+        if (courierId != null) {
+            sendOrderPush(payload.companyId, payload.order, { onlyUnitId: courierId });
+        }
     }
 }
 

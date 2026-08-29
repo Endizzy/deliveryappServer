@@ -294,6 +294,14 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       }
 
       await ensureCompletedAtColumn();
+
+      // Повторная доставка того же действия (офлайн-очередь курьера могла
+      // отправить запрос дважды, если ответ потерялся в пути) не должна
+      // сдвигать completed_at — иначе время доставки в отчётах уедет.
+      if (String(existing.status) === "completed") {
+        return res.json({ ok: true, alreadyDone: true });
+      }
+
       await pool.query(
         "UPDATE current_orders SET status='completed', completed_at=UTC_TIMESTAMP(), updated_at=NOW() WHERE company_id=? AND order_id=?",
         [companyId, orderId]
