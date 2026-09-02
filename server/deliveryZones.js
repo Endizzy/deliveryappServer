@@ -27,25 +27,16 @@ async function requireCompanyId(req) {
     return rows[0].company_id;
 }
 
-// hardcode для создания таблицы 
-let tableReady = false;
-async function ensureTable() {
-    if (tableReady) return;
-    await pool.query(
-        `CREATE TABLE IF NOT EXISTS delivery_zones (
-            zone_id    BIGINT AUTO_INCREMENT PRIMARY KEY,
-            company_id BIGINT NOT NULL,
-            name       VARCHAR(120) NOT NULL DEFAULT 'Зона',
-            color      VARCHAR(16)  NOT NULL DEFAULT '#3B82F6',
-            fee_cents  INT NULL,
-            geojson    JSON NOT NULL,
-            sort_order INT NOT NULL DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            INDEX idx_company (company_id)
-        )`
-    );
-    tableReady = true;
+// Схема БД ведётся вручную. SQL для создания таблицы и добавления колонок —
+// в deliveryappServer/migrations/delivery_zones.sql. Автоматических
+// CREATE TABLE / ALTER TABLE в рантайме здесь намеренно нет.
+
+// Евро из формы → центы в БД. Пустое значение = правило не задано (NULL).
+function toCents(value) {
+    if (value == null || value === '') return null;
+    const n = Number(String(value).replace(',', '.'));
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.round(n * 100);
 }
 
 // ─── Нормализация/валидация геометрии (GeoJSON Polygon / MultiPolygon) ────────
@@ -67,6 +58,9 @@ function rowToZone(r) {
         name: r.name,
         color: r.color,
         fee: r.fee_cents != null ? Number(r.fee_cents) / 100 : null,
+        // Правила по сумме заказа. null = правило не задано.
+        minOrder: r.min_order_cents != null ? Number(r.min_order_cents) / 100 : null,
+        freeFrom: r.free_from_cents != null ? Number(r.free_from_cents) / 100 : null,
         geometry,
     };
 }
@@ -74,10 +68,10 @@ function rowToZone(r) {
 // ─── GET /api/delivery-zones — список зон компании ───────────────────────────
 router.get("/", async (req, res) => {
     try {
-        await ensureTable();
         const companyId = await requireCompanyId(req);
         const [rows] = await pool.query(
-            `SELECT zone_id, company_id, name, color, fee_cents, geojson, sort_order
+            `SELECT zone_id, company_id, name, color, fee_cents,
+                    min_order_cents, free_from_cents, geojson, sort_order
                FROM delivery_zones
               WHERE company_id = ?
               ORDER BY sort_order ASC, zone_id ASC`,
@@ -85,8 +79,11 @@ router.get("/", async (req, res) => {
         );
         res.json({ ok: true, zones: rows.map(rowToZone) });
     } catch (e) {
+        // Без лога причина не видна ни в консоли сервера, ни оператору:
+        // например «Unknown column min_order_cents» = не применена миграция.
+        console.error("[zones] GET failed:", e?.sqlMessage || e?.message || e);
         const status = e.status || 500;
-        res.status(status).json({ ok: false, error: e.message || "server error" });
+        res.status(status).json({ ok: false, error: e.sqlMessage || e.message || "server error" });
     }
 });
 
@@ -95,7 +92,6 @@ router.get("/", async (req, res) => {
 router.put("/", async (req, res) => {
     let conn;
     try {
-        await ensureTable();
         const companyId = await requireCompanyId(req);
 
         const incoming = Array.isArray(req.body?.zones) ? req.body.zones : [];
@@ -109,6 +105,8 @@ router.put("/", async (req, res) => {
                     z.fee != null && Number.isFinite(Number(z.fee))
                         ? Math.round(Number(z.fee) * 100)
                         : null,
+                min_order_cents: toCents(z.minOrder),
+                free_from_cents: toCents(z.freeFrom),
                 geojson: JSON.stringify(z.geometry),
                 sort_order: i,
             }));
@@ -120,15 +118,16 @@ router.put("/", async (req, res) => {
         for (const z of clean) {
             await conn.query(
                 `INSERT INTO delivery_zones
-                    (company_id, name, color, fee_cents, geojson, sort_order)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [companyId, z.name, z.color, z.fee_cents, z.geojson, z.sort_order]
+                    (company_id, name, color, fee_cents, min_order_cents, free_from_cents, geojson, sort_order)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [companyId, z.name, z.color, z.fee_cents, z.min_order_cents, z.free_from_cents, z.geojson, z.sort_order]
             );
         }
         await conn.commit();
 
         const [rows] = await pool.query(
-            `SELECT zone_id, company_id, name, color, fee_cents, geojson, sort_order
+            `SELECT zone_id, company_id, name, color, fee_cents,
+                    min_order_cents, free_from_cents, geojson, sort_order
                FROM delivery_zones
               WHERE company_id = ?
               ORDER BY sort_order ASC, zone_id ASC`,
@@ -139,8 +138,9 @@ router.put("/", async (req, res) => {
         if (conn) {
             try { await conn.rollback(); } catch {}
         }
+        console.error("[zones] PUT failed:", e?.sqlMessage || e?.message || e);
         const status = e.status || 500;
-        res.status(status).json({ ok: false, error: e.message || "server error" });
+        res.status(status).json({ ok: false, error: e.sqlMessage || e.message || "server error" });
     } finally {
         if (conn) conn.release();
     }
