@@ -142,6 +142,231 @@ router.post("/", async (req, res) => {
 });
 
 /** PUT /api/menu/:id — обновить позицию */
+// ═══════════════════════════════════════════════════════════════════════════
+//  Категории меню
+//
+//  Категории — отдельная сущность (таблица menu_categories), но позиции
+//  по-прежнему хранят название категории текстом в menu.item_category.
+//  Так создание заказа, поиск позиций и мобильное приложение продолжают
+//  работать без изменений, а связь поддерживается при переименовании.
+//
+//  ВАЖНО: маршруты объявлены ДО "/:id", иначе Express попытается принять
+//  "categories" за идентификатор позиции.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function normalizeCategoryName(value) {
+    const name = String(value ?? "").trim().replace(/\s+/g, " ");
+    if (!name) return { ok: false, error: "Название категории обязательно" };
+    if (name.length > 120) return { ok: false, error: "Название слишком длинное" };
+    return { ok: true, name };
+}
+
+/** GET /api/menu/categories — категории компании со счётчиком позиций */
+router.get("/categories", async (req, res) => {
+    try {
+        const userId = req.user?.userId;
+        if (!userId) return res.status(401).json({ error: "Нет токена" });
+        const companyId = await requireCompanyId(userId);
+
+        const [rows] = await pool.query(
+            `SELECT c.category_id, c.name, c.sort_order,
+                    (SELECT COUNT(*) FROM menu m
+                      WHERE m.company_id = c.company_id
+                        AND m.item_category = c.name) AS items_count
+               FROM menu_categories c
+              WHERE c.company_id = ?
+              ORDER BY c.sort_order ASC, c.name ASC`,
+            [companyId]
+        );
+
+        return res.json({
+            ok: true,
+            categories: rows.map((r) => ({
+                id: r.category_id,
+                name: r.name,
+                sortOrder: r.sort_order,
+                itemsCount: Number(r.items_count) || 0,
+            })),
+        });
+    } catch (err) {
+        if (err.code === "NO_COMPANY")
+            return res.status(400).json({ error: "У пользователя не указан company_id" });
+        console.error("GET /api/menu/categories error:", err?.sqlMessage || err);
+        return res.status(500).json({ error: err?.sqlMessage || "Ошибка сервера" });
+    }
+});
+
+/** POST /api/menu/categories — создать категорию */
+router.post("/categories", async (req, res) => {
+    try {
+        const userId = req.user?.userId;
+        if (!userId) return res.status(401).json({ error: "Нет токена" });
+        const companyId = await requireCompanyId(userId);
+
+        const parsed = normalizeCategoryName(req.body?.name);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+        // новая категория встаёт в конец списка вкладок
+        const [[maxRow]] = await pool.query(
+            "SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM menu_categories WHERE company_id = ?",
+            [companyId]
+        );
+
+        const [result] = await pool.query(
+            "INSERT INTO menu_categories (company_id, name, sort_order) VALUES (?, ?, ?)",
+            [companyId, parsed.name, Number(maxRow.max_order) + 1]
+        );
+
+        return res.json({
+            ok: true,
+            category: {
+                id: result.insertId,
+                name: parsed.name,
+                sortOrder: Number(maxRow.max_order) + 1,
+                itemsCount: 0,
+            },
+        });
+    } catch (err) {
+        if (err.code === "ER_DUP_ENTRY")
+            return res.status(409).json({ error: "Такая категория уже есть" });
+        if (err.code === "NO_COMPANY")
+            return res.status(400).json({ error: "У пользователя не указан company_id" });
+        console.error("POST /api/menu/categories error:", err?.sqlMessage || err);
+        return res.status(500).json({ error: err?.sqlMessage || "Ошибка сервера" });
+    }
+});
+
+/**
+ * PUT /api/menu/categories/:id — переименовать категорию.
+ * Позиции хранят название текстом, поэтому переименование обязано обновить
+ * их одной транзакцией — иначе позиции «потеряют» свою категорию.
+ */
+router.put("/categories/:id", async (req, res) => {
+    let conn;
+    try {
+        const userId = req.user?.userId;
+        if (!userId) return res.status(401).json({ error: "Нет токена" });
+        const companyId = await requireCompanyId(userId);
+
+        const categoryId = Number(req.params.id);
+        if (!categoryId) return res.status(400).json({ error: "Некорректный id" });
+
+        const parsed = normalizeCategoryName(req.body?.name);
+        if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+        conn = await pool.getConnection();
+        await conn.beginTransaction();
+
+        const [[current]] = await conn.query(
+            "SELECT name FROM menu_categories WHERE category_id = ? AND company_id = ? LIMIT 1",
+            [categoryId, companyId]
+        );
+        if (!current) {
+            await conn.rollback();
+            return res.status(404).json({ error: "Категория не найдена" });
+        }
+
+        if (current.name !== parsed.name) {
+            await conn.query(
+                "UPDATE menu_categories SET name = ? WHERE category_id = ? AND company_id = ?",
+                [parsed.name, categoryId, companyId]
+            );
+            await conn.query(
+                "UPDATE menu SET item_category = ?, updated_at = NOW() WHERE company_id = ? AND item_category = ?",
+                [parsed.name, companyId, current.name]
+            );
+        }
+
+        await conn.commit();
+        return res.json({ ok: true, category: { id: categoryId, name: parsed.name } });
+    } catch (err) {
+        if (conn) { try { await conn.rollback(); } catch {} }
+        if (err.code === "ER_DUP_ENTRY")
+            return res.status(409).json({ error: "Такая категория уже есть" });
+        console.error("PUT /api/menu/categories/:id error:", err?.sqlMessage || err);
+        return res.status(500).json({ error: err?.sqlMessage || "Ошибка сервера" });
+    } finally {
+        if (conn) conn.release();
+    }
+});
+
+/**
+ * DELETE /api/menu/categories/:id — удалить категорию.
+ * Позиции НЕ удаляем: у них снимается категория. Терять товары из-за
+ * удаления вкладки недопустимо.
+ */
+router.delete("/categories/:id", async (req, res) => {
+    let conn;
+    try {
+        const userId = req.user?.userId;
+        if (!userId) return res.status(401).json({ error: "Нет токена" });
+        const companyId = await requireCompanyId(userId);
+
+        const categoryId = Number(req.params.id);
+        if (!categoryId) return res.status(400).json({ error: "Некорректный id" });
+
+        conn = await pool.getConnection();
+        await conn.beginTransaction();
+
+        const [[current]] = await conn.query(
+            "SELECT name FROM menu_categories WHERE category_id = ? AND company_id = ? LIMIT 1",
+            [categoryId, companyId]
+        );
+        if (!current) {
+            await conn.rollback();
+            return res.status(404).json({ error: "Категория не найдена" });
+        }
+
+        const [upd] = await conn.query(
+            "UPDATE menu SET item_category = NULL, updated_at = NOW() WHERE company_id = ? AND item_category = ?",
+            [companyId, current.name]
+        );
+        await conn.query(
+            "DELETE FROM menu_categories WHERE category_id = ? AND company_id = ?",
+            [categoryId, companyId]
+        );
+
+        await conn.commit();
+        return res.json({ ok: true, clearedItems: upd.affectedRows });
+    } catch (err) {
+        if (conn) { try { await conn.rollback(); } catch {} }
+        console.error("DELETE /api/menu/categories/:id error:", err?.sqlMessage || err);
+        return res.status(500).json({ error: err?.sqlMessage || "Ошибка сервера" });
+    } finally {
+        if (conn) conn.release();
+    }
+});
+
+/** PUT /api/menu/categories-order — порядок вкладок: { ids: [id, ...] } */
+router.put("/categories-order", async (req, res) => {
+    let conn;
+    try {
+        const userId = req.user?.userId;
+        if (!userId) return res.status(401).json({ error: "Нет токена" });
+        const companyId = await requireCompanyId(userId);
+
+        const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : [];
+        if (!ids.length) return res.status(400).json({ error: "Пустой список" });
+
+        conn = await pool.getConnection();
+        await conn.beginTransaction();
+        for (let i = 0; i < ids.length; i += 1) {
+            await conn.query(
+                "UPDATE menu_categories SET sort_order = ? WHERE category_id = ? AND company_id = ?",
+                [i, ids[i], companyId]
+            );
+        }
+        await conn.commit();
+        return res.json({ ok: true });
+    } catch (err) {
+        if (conn) { try { await conn.rollback(); } catch {} }
+        console.error("PUT /api/menu/categories-order error:", err?.sqlMessage || err);
+        return res.status(500).json({ error: err?.sqlMessage || "Ошибка сервера" });
+    } finally {
+        if (conn) conn.release();
+    }
+});
+
 router.put("/:id", async (req, res) => {
     try {
         const userId = req.user?.userId;
