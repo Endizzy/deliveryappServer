@@ -98,7 +98,7 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       const params = [companyId];
 
       if (tab === "active") {
-        where.push("co.status IN ('new','ready','enroute')");
+        where.push("co.status IN ('new','preparing','ready','enroute')");
         where.push("co.courier_unit_id IS NULL");
       } else if (tab === "my") {
         if (!courierId) return res.json({ ok: true, items: [] });

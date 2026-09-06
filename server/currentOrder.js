@@ -381,7 +381,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             if (tab === "active") {
                 where.push("co.order_type='active'");
-                where.push("co.status IN ('new','ready','enroute')");
+                where.push("co.status IN ('new','preparing','ready','enroute')");
             } else if (tab === "preorders") {
                 where.push("co.order_type='preorder'");
                 where.push("co.status NOT IN ('completed','cancelled')");
