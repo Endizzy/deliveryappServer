@@ -27,7 +27,7 @@ import { fileURLToPath } from "url";
 import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js";
 import { getReport, getMobileTodayReport } from "./getReport.js";
 import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js";
-import currentOrdersRouter from "./currentOrder.js";
+import currentOrdersRouter, { PAYMENT_METHODS } from "./currentOrder.js";
 import deliveryZonesRouter from "./deliveryZones.js";
 import createCustomersRouter from "./customers.js";
 import { getInvoiceSettings, saveInvoiceSettings } from "./invoiceSettings.js";
@@ -597,4 +597,7 @@ console.log('[Cron] ✅ activatePreorders job scheduled (every minute)');
 
 server.listen(PORT, () => {
     console.log(`HTTP + WS server running on port ${PORT}`);
+    // Отпечаток сборки: по этой строке в `docker logs` сразу видно, свежий код
+    // в контейнере или старый, — без захода внутрь и grep по файлам.
+    console.log(`[boot] способы оплаты: ${PAYMENT_METHODS.join(", ")}`);
 });

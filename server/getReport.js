@@ -60,6 +60,7 @@ export async function getReport(req, res) {
           COALESCE(SUM(CASE WHEN os.payment_method = 'cash' THEN os.amount_total ELSE 0 END), 0) AS total_cash_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'card' THEN os.amount_total ELSE 0 END), 0) AS total_card_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'wire' THEN os.amount_total ELSE 0 END), 0) AS total_wire_sum,
+          COALESCE(SUM(CASE WHEN os.payment_method = 'paid' THEN os.amount_total ELSE 0 END), 0) AS total_paid_sum,
           COALESCE(SUM(os.items_count), 0) AS total_items
       FROM
           users cu
@@ -82,6 +83,7 @@ export async function getReport(req, res) {
           COALESCE(SUM(CASE WHEN os.payment_method = 'cash' THEN os.amount_total ELSE 0 END), 0) AS total_cash_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'card' THEN os.amount_total ELSE 0 END), 0) AS total_card_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'wire' THEN os.amount_total ELSE 0 END), 0) AS total_wire_sum,
+          COALESCE(SUM(CASE WHEN os.payment_method = 'paid' THEN os.amount_total ELSE 0 END), 0) AS total_paid_sum,
           COALESCE(SUM(os.items_count), 0) AS total_items
       FROM OrderStats os
       WHERE os.courier_unit_id IS NULL
@@ -140,6 +142,7 @@ export async function getMobileTodayReport(req, res) {
           COALESCE(SUM(CASE WHEN os.payment_method = 'cash' THEN os.amount_total ELSE 0 END), 0) AS total_cash_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'card' THEN os.amount_total ELSE 0 END), 0) AS total_card_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'wire' THEN os.amount_total ELSE 0 END), 0) AS total_wire_sum,
+          COALESCE(SUM(CASE WHEN os.payment_method = 'paid' THEN os.amount_total ELSE 0 END), 0) AS total_paid_sum,
           COALESCE(SUM(os.items_count), 0) AS total_items
       FROM users cu
       LEFT JOIN OrderStats os ON cu.user_id = os.courier_unit_id
@@ -156,6 +159,7 @@ export async function getMobileTodayReport(req, res) {
           COALESCE(SUM(CASE WHEN os.payment_method = 'cash' THEN os.amount_total ELSE 0 END), 0) AS total_cash_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'card' THEN os.amount_total ELSE 0 END), 0) AS total_card_sum,
           COALESCE(SUM(CASE WHEN os.payment_method = 'wire' THEN os.amount_total ELSE 0 END), 0) AS total_wire_sum,
+          COALESCE(SUM(CASE WHEN os.payment_method = 'paid' THEN os.amount_total ELSE 0 END), 0) AS total_paid_sum,
           COALESCE(SUM(os.items_count), 0) AS total_items
       FROM OrderStats os
       WHERE os.courier_unit_id IS NULL
@@ -174,6 +178,7 @@ export async function getMobileTodayReport(req, res) {
       cash: Number(r.total_cash_sum) || 0,
       card: Number(r.total_card_sum) || 0,
       wire: Number(r.total_wire_sum) || 0,
+      paid: Number(r.total_paid_sum) || 0,
       totalItems: Number(r.total_items) || 0,
     }));
 
@@ -184,9 +189,10 @@ export async function getMobileTodayReport(req, res) {
         cash: acc.cash + c.cash,
         card: acc.card + c.card,
         wire: acc.wire + c.wire,
+        paid: acc.paid + c.paid,
         totalItems: acc.totalItems + c.totalItems,
       }),
-      { totalOrders: 0, totalSum: 0, cash: 0, card: 0, wire: 0, totalItems: 0 }
+      { totalOrders: 0, totalSum: 0, cash: 0, card: 0, wire: 0, paid: 0, totalItems: 0 }
     );
 
     // Сводка по текущему (авторизованному) курьеру

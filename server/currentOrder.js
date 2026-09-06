@@ -167,12 +167,26 @@ function safeParseItemsJSON(v) {
     }
 }
 
+export const PAYMENT_METHODS = ["cash", "card", "wire", "paid"];
+
+/**
+ * Приводит способ оплаты к каноническому коду.
+ *
+ * Возвращает null, если значение не распознано. Раньше здесь стоял молчаливый
+ * возврат "cash" — из-за него любой неизвестный метод превращался в наличные,
+ * и заказ попадал в кассу курьера, хотя денег он не получал. Такую ошибку
+ * никто не замечает, пока не сойдётся отчёт, поэтому теперь неизвестное
+ * значение обрабатывают вызывающие: POST отвечает ошибкой, PUT сохраняет
+ * прежний метод.
+ */
 function coercePaymentMethod(val) {
     const s = String(val || "").trim().toLowerCase();
     if (["cash", "наличные", "нал"].includes(s)) return "cash";
     if (["card", "карта", "банковская карта"].includes(s)) return "card";
     if (["wire", "перечислением", "безнал", "безналичный"].includes(s)) return "wire";
-    return "cash";
+    // «Оплачен» — заказ уже оплачен до доставки, курьер денег не берёт
+    if (["paid", "оплачен", "оплачено", "apmaksats", "apmaksāts"].includes(s)) return "paid";
+    return null;
 }
 
 /** Определяем «операционный день» для нумерации */
@@ -468,6 +482,14 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const orderNo = b.orderNo || `CO-${Date.now().toString().slice(-8)}`;
             const payment_method = coercePaymentMethod(b.payment);
+            if (!payment_method) {
+                // Лучше отказать, чем тихо записать наличные и испортить отчёт
+                console.warn(`[order] неизвестный способ оплаты: ${JSON.stringify(b.payment)}`);
+                return res.status(400).json({
+                    ok: false,
+                    error: `Неизвестный способ оплаты: ${b.payment}. Допустимо: ${PAYMENT_METHODS.join(", ")}`,
+                });
+            }
             const order_type = b.orderType || "active";
             const scheduled_at = toMySQLDatetime(b.scheduledAt);
 
@@ -632,19 +654,30 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const { items, amount_subtotal, amount_discount, amount_total, delivery_fee } =
                 normalizeItemsAndAmounts(b.selectedItems || [], b.deliveryFee, orderDiscount);
 
-            const payment_method = coercePaymentMethod(b.payment);
-
             // Кто вёз заказ до правки: нужно, чтобы отличить «назначили курьера»
             // от обычного редактирования и уведомить нового исполнителя.
+            // Заодно забираем прежний способ оплаты — он станет запасным
+            // вариантом, если клиент прислал значение, которое мы не знаем.
             let prevCourierId = null;
+            let prevPayment = null;
             try {
                 const [[prev]] = await pool.query(
-                    "SELECT courier_unit_id FROM current_orders WHERE company_id=? AND order_id=? LIMIT 1",
+                    "SELECT courier_unit_id, payment_method FROM current_orders WHERE company_id=? AND order_id=? LIMIT 1",
                     [companyId, id]
                 );
                 prevCourierId = prev?.courier_unit_id ?? null;
+                prevPayment = prev?.payment_method ?? null;
             } catch (e) {
-                console.warn("[order] read prev courier failed:", e?.message ?? e);
+                console.warn("[order] read prev order failed:", e?.message ?? e);
+            }
+
+            // Неизвестный метод не должен превращать заказ в наличные:
+            // оставляем то, что уже было записано.
+            const payment_method = coercePaymentMethod(b.payment) ?? prevPayment ?? "cash";
+            if (!coercePaymentMethod(b.payment)) {
+                console.warn(
+                    `[order ${id}] неизвестный способ оплаты ${JSON.stringify(b.payment)}, оставлен прежний: ${payment_method}`
+                );
             }
 
             await ensureCompletedAtColumn();
