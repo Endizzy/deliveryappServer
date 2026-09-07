@@ -33,6 +33,18 @@ export async function getReport(req, res) {
     }
 
     // 2) Calculate per-courier stats, plus a catch-all row for unassigned orders
+    // Отбор идёт по операционному дню заказа (order_seq_date), а не по времени
+    // последней правки. По updated_at отчёт «плыл»: сохранение старого заказа
+    // переносило его выручку в день правки, а ночной заказ (создан до полуночи,
+    // закрыт после) попадал в следующий день, хотя его № относится к предыдущему.
+    // order_seq_date проставляется при создании и больше не меняется.
+    //
+    // COALESCE — страховка на случай старых заказов, у которых order_seq_date
+    // пустой: они не должны молча исчезнуть из отчёта, поэтому для них
+    // остаётся прежнее поведение. Если проверка покажет, что таких строк нет
+    //   SELECT COUNT(*) FROM current_orders WHERE order_seq_date IS NULL;
+    // условие можно упростить до `co.order_seq_date BETWEEN ? AND ?` —
+    // тогда заработает индекс.
     const [reportRows] = await pool.query(
       `WITH OrderStats AS (
           SELECT
@@ -47,7 +59,7 @@ export async function getReport(req, res) {
               '$[*]' COLUMNS (quantity INT PATH '$.quantity')
           ) AS jt ON TRUE
           WHERE co.company_id = ?
-            AND DATE(co.updated_at) BETWEEN ? AND ?
+            AND COALESCE(co.order_seq_date, DATE(co.completed_at), DATE(co.updated_at)) BETWEEN ? AND ?
             AND co.status = 'completed'
           GROUP BY co.order_id
       )

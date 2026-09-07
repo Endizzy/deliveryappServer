@@ -230,6 +230,32 @@ export function todayUtcRange() {
     return { start: `${startDate} 00:00:00`, end: `${nextDate} 00:00:00` };
 }
 
+/**
+ * Проверяет дату операционного дня для архива.
+ *
+ * Возвращает "YYYY-MM-DD" либо null, если строка не подходит: неверный формат,
+ * несуществующий день (например 2026-02-31) или дата из будущего. Значение
+ * уходит в запрос параметром, но формат всё равно проверяем — так ошибка
+ * видна сразу, а не превращается в пустой список.
+ */
+export function normalizeSeqDate(value) {
+    const s = String(value ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+
+    // Отсекаем несуществующие даты: Date их «исправляет» (31.02 → 03.03),
+    // поэтому сверяем результат с исходной строкой.
+    const d = new Date(`${s}T00:00:00Z`);
+    if (Number.isNaN(d.getTime())) return null;
+    if (d.toISOString().slice(0, 10) !== s) return null;
+
+    // Будущий операционный день смотреть незачем: заказов там нет,
+    // а запрос выглядел бы как рабочий.
+    const today = todayUtcRange().start.slice(0, 10);
+    if (s > today) return null;
+
+    return s;
+}
+
 /** Транзакционное получение следующего порядкового номера за день */
 export async function allocateDailySeq(conn, companyId, orderSeqDate) {
     const [rows] = await conn.query(
@@ -366,7 +392,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
         }
     });
 
-    // GET /api/current-orders?tab=active|preorders|all
+    // GET /api/current-orders?tab=active|preorders|completed|history
+    //   history дополнительно требует date=YYYY-MM-DD
     router.get("/", async (req, res) => {
         try {
             const ctx = await resolveCompanyContext(req, res);
@@ -378,6 +405,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const where = ["co.company_id=?"];
             const params = [companyId];
+            // История отдаётся по номеру заказа за день, остальные вкладки —
+            // по времени создания, как было
+            let orderBy = "co.created_at DESC, co.order_id DESC";
 
             if (tab === "active") {
                 where.push("co.order_type='active'");
@@ -391,6 +421,23 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 where.push("co.status='completed'");
                 where.push("co.completed_at >= ? AND co.completed_at < ?");
                 params.push(start, end);
+            } else if (tab === "history") {
+                // Архив за один операционный день. Отбор по order_seq_date:
+                // это тот же день, по которому заказы нумеруются, он всегда
+                // заполнен (в отличие от completed_at у старых и отменённых)
+                // и не сдвигается при редактировании заказа.
+                const date = normalizeSeqDate(req.query.date);
+                if (!date) {
+                    return res.status(400).json({
+                        ok: false,
+                        error: "Некорректная дата: ожидается YYYY-MM-DD, не позже сегодняшнего дня",
+                    });
+                }
+                // Статусы не фильтруем: за прошедший день нужно видеть и
+                // незакрытые заказы, чтобы их можно было завершить вручную.
+                where.push("co.order_seq_date = ?");
+                params.push(date);
+                orderBy = "co.order_seq DESC, co.order_id DESC";
             }
 
             const sql = `
@@ -401,7 +448,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                  LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
                  LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
         WHERE ${where.join(" AND ")}
-        ORDER BY co.created_at DESC, co.order_id DESC
+        ORDER BY ${orderBy}
         LIMIT 500`;
             const [rows] = await pool.query(sql, params);
 
@@ -694,7 +741,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
              address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?, people_amount=?,
              address_lat=?, address_lng=?,
              notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW(),
-             completed_at = CASE WHEN ? = 'completed' THEN UTC_TIMESTAMP() ELSE completed_at END
+             completed_at = CASE WHEN ? = 'completed' THEN COALESCE(completed_at, UTC_TIMESTAMP()) ELSE completed_at END
          WHERE company_id=? AND order_id=?`,
                 [
                     b.orderType || "active",
@@ -781,7 +828,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             await pool.query(
                 `UPDATE current_orders
                     SET status=?, updated_at=NOW(),
-                        completed_at = CASE WHEN ? = 'completed' THEN UTC_TIMESTAMP() ELSE completed_at END
+                        completed_at = CASE WHEN ? = 'completed' THEN COALESCE(completed_at, UTC_TIMESTAMP()) ELSE completed_at END
                   WHERE company_id=? AND order_id=?`,
                 [status, status, companyId, id]
             );
