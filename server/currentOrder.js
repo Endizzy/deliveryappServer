@@ -625,8 +625,11 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 });
             }
         } catch (e) {
-            console.error("create current order", e);
-            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+            // Общее «Ошибка сервера» ничего не объясняет: возвращаем сообщение
+            // MySQL, иначе причину видно только в логах контейнера.
+            const detail = e?.sqlMessage || e?.message || String(e);
+            console.error("create current order:", e?.code || "", detail);
+            res.status(500).json({ ok: false, error: `Ошибка сервера: ${detail}` });
         } finally {
             if (conn) conn.release();
         }
@@ -757,8 +760,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 });
             }
         } catch (e) {
-            console.error("update current order", e);
-            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+            const detail = e?.sqlMessage || e?.message || String(e);
+            console.error("update current order:", e?.code || "", detail);
+            res.status(500).json({ ok: false, error: `Ошибка сервера: ${detail}` });
         }
     });
 

@@ -30,17 +30,10 @@ export async function activatePreorders(broadcastToAdmins) {
         // ✅ ПОЛНОСТЬЮ НА SQL: SELECT только те заказы, которые нужно активировать СЕЙЧАС
         // Условие: scheduled_at > NOW() (ещё не наступили) И 
         //          scheduled_at <= NOW() + 2 HOUR (до них осталось ≤ 2 часа)
+        // Здесь нужны только идентификаторы: полные данные для WS перечитываем
+        // после UPDATE — иначе в событие уедет состояние заказа «до» активации.
         const [toActivate] = await conn.query(
-            `SELECT 
-                order_id, company_id, customer_name, customer_phone, order_no,
-                order_seq, order_seq_date, address_street, address_house,
-                address_building, address_apartment, address_floor, address_code,
-                address_lat, address_lng, geocoded_at, geocode_provider,
-                status, order_type, payment_method, people_amount, delivery_fee,
-                amount_total, amount_subtotal, amount_discount, items_json,
-                created_at, updated_at, scheduled_at,
-                courier_unit_id, dispatcher_unit_id, pickup_unit_id,
-                NULL AS courier_nickname, NULL AS pickup_nickname
+            `SELECT order_id, company_id, order_no
              FROM current_orders
              WHERE order_type = 'preorder'
                AND scheduled_at IS NOT NULL
@@ -98,13 +91,34 @@ export async function activatePreorders(broadcastToAdmins) {
                     console.log(`[activatePreorders] ✅ Заказ ${row.order_id} (${row.order_no}) активирован`);
                     results.success++;
 
-                    // Отправляем broadcastToAdmins с обновлённым заказом
-                    const dto = rowToPanelDto(row);
+                    // Перечитываем заказ теми же JOIN'ами, что и список заказов.
+                    // Раньше DTO собирался из строки, прочитанной ДО UPDATE, а в
+                    // том SELECT'е courier_nickname и pickup_nickname были
+                    // заглушками NULL — из-за этого по WS уезжал заказ без
+                    // курьера и точки комплектации, и они появлялись только
+                    // после перезагрузки страницы.
+                    const [freshRows] = await conn.query(
+                        `SELECT co.*,
+                                cu1.nickname AS courier_nickname,
+                                cu2.nickname AS pickup_nickname
+                           FROM current_orders co
+                                LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
+                                LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+                          WHERE co.order_id = ? LIMIT 1`,
+                        [row.order_id]
+                    );
+
+                    if (!freshRows.length) {
+                        console.warn(`[activatePreorders] ⚠️ Заказ ${row.order_id} исчез после UPDATE, WS не отправлен`);
+                        continue;
+                    }
+
+                    const dto = rowToPanelDto(freshRows[0]);
                     try {
                         broadcastToAdmins({
                             type: 'order_updated',
                             companyId: row.company_id,
-                            order: { ...dto, orderType: 'active' },
+                            order: dto,
                         });
                     } catch (wsErr) {
                         console.error(
