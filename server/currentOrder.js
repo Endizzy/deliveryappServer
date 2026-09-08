@@ -37,9 +37,13 @@ function toMySQLDatetime(isoString) {
     return d.toISOString().slice(0, 19).replace("T", " ");
 }
 
-// orderDiscount (необяз.): { type: 'percent'|'fixed', value } — персональная
-// скидка клиента, применяется к сумме позиций ПОСЛЕ поштучных скидок.
-function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null) {
+// orderDiscount (необяз.): { type: 'percent'|'fixed', value } — постоянная
+// скидка клиента, привязанная к телефону.
+// manualPercent (необяз.): разовая скидка на этот заказ, 0..100.
+//
+// Обе скидки процентные, поэтому применяется БОЛЬШАЯ из них, а не сумма:
+// карта −10% и разовая −20% должны дать −20%, а не −30%.
+function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manualPercent = 0) {
     const toCents = (amount) => {
         const s = typeof amount === "string" ? amount.trim().replace(",", ".") : amount;
         const n = Number(s);
@@ -82,17 +86,38 @@ function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null) {
     const subtotalCents = norm.reduce((s, r) => s + r._price_cents * r.quantity, 0);
     const itemsTotalCents = norm.reduce((s, r) => s + r._line_cents, 0);
 
-    // Персональная скидка клиента поверх поштучных скидок
-    let orderDiscountCents = 0;
+    // База для ПРОЦЕНТНОЙ скидки клиента — только позиции без скидки в меню.
+    // Раньше процент брался со всей суммы, и на акционном товаре скидка
+    // складывалась дважды: −20% в меню и сверху −10% персональных.
+    const percentBaseCents = norm.reduce(
+        (s, r) => (Number(r.discount) > 0 ? s : s + r._price_cents * r.quantity),
+        0
+    );
+
+    // Постоянная скидка клиента поверх поштучных скидок.
+    // Та же формула на клиенте — utils/money.js, customerDiscountCents.
+    let personalCents = 0;
     if (orderDiscount && Number(orderDiscount.value) > 0) {
         const v = Number(orderDiscount.value) || 0;
         if (orderDiscount.type === "fixed") {
-            orderDiscountCents = Math.min(toCents(v), itemsTotalCents);
+            // Фиксированная сумма вычитается из всего заказа: удвоения скидки
+            // тут не возникает, поведение оставлено прежним.
+            personalCents = Math.min(toCents(v), itemsTotalCents);
         } else {
             const pct = Math.min(v, 100);
-            orderDiscountCents = Math.round((itemsTotalCents * pct) / 100);
+            personalCents = Math.round((percentBaseCents * pct) / 100);
         }
     }
+
+    // Разовая скидка на заказ
+    const manual = Number(manualPercent);
+    const manualCents =
+        Number.isFinite(manual) && manual > 0
+            ? Math.round((percentBaseCents * Math.min(manual, 100)) / 100)
+            : 0;
+
+    // Не складываем: клиент получает лучшее из двух условий
+    const orderDiscountCents = Math.max(personalCents, manualCents);
     const itemsAfterOrderDiscCents = Math.max(0, itemsTotalCents - orderDiscountCents);
 
     // amount_discount = поштучные скидки + персональная скидка клиента
@@ -138,6 +163,9 @@ export function rowToPanelDto(r) {
         deliveryFee: Number(r.delivery_fee || 0),
         numOfPeople: Number(r.people_amount || 0),
         paymentMethod: r.payment_method,
+        // Разовая скидка на заказ: без неё форма редактирования не смогла бы
+        // показать выбранный процент и потеряла бы его при сохранении.
+        manualDiscountPercent: Number(r.manual_discount_percent || 0),
         customer: r.customer_name,
         phone: r.customer_phone,
         address: addr,
@@ -153,6 +181,13 @@ export function rowToPanelDto(r) {
         geocodedAt: r.geocoded_at ?? null,
         geocodeProvider: r.geocode_provider ?? null,
     };
+}
+
+/** Разовая скидка на заказ: целое 0..100, всё остальное — 0 */
+function coerceManualDiscount(value) {
+    const n = Math.trunc(Number(value));
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(n, 100);
 }
 
 function safeParseItemsJSON(v) {
@@ -522,8 +557,11 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 }
             }
 
+            const manualDiscountPercent = coerceManualDiscount(b.manualDiscountPercent);
             const { items, amount_subtotal, amount_discount, amount_total, delivery_fee } =
-                normalizeItemsAndAmounts(b.selectedItems || [], b.deliveryFee, orderDiscount);
+                normalizeItemsAndAmounts(
+                    b.selectedItems || [], b.deliveryFee, orderDiscount, manualDiscountPercent
+                );
             if (!b.payment)
                 return res.status(400).json({ ok: false, error: "Способ оплаты обязателен" });
 
@@ -565,6 +603,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
               customer_name, customer_phone,
               address_street, address_house, address_building, address_apartment, address_floor, address_code,
               people_amount, notes,
+              manual_discount_percent,
               items_json, amount_subtotal, amount_discount, amount_total)
              VALUES
              (?, ?, ?, ?,
@@ -575,6 +614,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
               ?, ?,
               ?, ?, ?, ?, ?, ?,
               ?,?,
+              ?,
               ?, ?, ?, ?)`,
                         [
                             companyId, orderNo, nextSeq, order_seq_date,
@@ -585,6 +625,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                             b.customer, b.phone,
                             b.street || null, b.house || null, b.building || null, b.apart || null, b.floor || null, b.code || null,
                             b.numOfPeople || null, b.notes || null,
+                            manualDiscountPercent,
                             JSON.stringify(items), amount_subtotal, amount_discount, amount_total
                         ]
                     );
@@ -701,8 +742,11 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 }
             }
 
+            const manualDiscountPercent = coerceManualDiscount(b.manualDiscountPercent);
             const { items, amount_subtotal, amount_discount, amount_total, delivery_fee } =
-                normalizeItemsAndAmounts(b.selectedItems || [], b.deliveryFee, orderDiscount);
+                normalizeItemsAndAmounts(
+                    b.selectedItems || [], b.deliveryFee, orderDiscount, manualDiscountPercent
+                );
 
             // Кто вёз заказ до правки: нужно, чтобы отличить «назначили курьера»
             // от обычного редактирования и уведомить нового исполнителя.
@@ -740,6 +784,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
              customer_name=?, customer_phone=?,
              address_street=?, address_house=?, address_building=?, address_apartment=?, address_floor=?, address_code=?, people_amount=?,
              address_lat=?, address_lng=?,
+             manual_discount_percent=?,
              notes=?, items_json=?, amount_subtotal=?, amount_discount=?, amount_total=?, updated_at=NOW(),
              completed_at = CASE WHEN ? = 'completed' THEN COALESCE(completed_at, UTC_TIMESTAMP()) ELSE completed_at END
          WHERE company_id=? AND order_id=?`,
@@ -762,6 +807,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     b.numOfPeople || null,
                     Number.isFinite(Number(b.addressLat)) ? Number(b.addressLat) : null,
                     Number.isFinite(Number(b.addressLng)) ? Number(b.addressLng) : null,
+                    manualDiscountPercent,
                     b.notes || null,
                     JSON.stringify(items),
                     amount_subtotal,
