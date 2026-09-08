@@ -204,6 +204,11 @@ function safeParseItemsJSON(v) {
 
 export const PAYMENT_METHODS = ["cash", "card", "wire", "paid"];
 
+/** Статусы заказа. Совпадают со списком в EditOrder и в панели заказов. */
+export const ORDER_STATUSES = [
+    "new", "preparing", "ready", "enroute", "completed", "cancelled",
+];
+
 /**
  * Приводит способ оплаты к каноническому коду.
  *
@@ -860,7 +865,19 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
     });
 
     // PATCH /api/current-orders/:id/status  {status:'ready'|'enroute'|...}
-    router.patch("/:id/status", async (req, res) => {
+    // Смена ТОЛЬКО статуса заказа.
+    //
+    // Здесь не пересчитываются суммы — и это главное. Раньше панель заказов
+    // меняла статус через полный PUT /:id, а он собирает заказ заново: заново
+    // считает позиции и заново подтягивает скидку клиента. Панель при этом
+    // присылала applyCustomerDiscount:false, из-за чего скидка обнулялась и
+    // завершённый заказ показывался по полной цене. Мобильное приложение
+    // ходило своим маршрутом и суммы не трогало — поэтому там всё было верно.
+    //
+    // Маршрут зарегистрирован и на PUT, и на PATCH: CORS-политика сервера
+    // PATCH из браузера не пропускает (methods без PATCH в index.js), поэтому
+    // для веб-клиента нужен именно PUT.
+    const updateStatusHandler = async (req, res) => {
         try {
             const ctx = await resolveCompanyContext(req, res);
             if (!ctx) return;
@@ -869,6 +886,12 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const { status } = req.body || {};
             if (!status)
                 return res.status(400).json({ ok: false, error: "Не указан статус" });
+            if (!ORDER_STATUSES.includes(String(status))) {
+                return res.status(400).json({
+                    ok: false,
+                    error: `Неизвестный статус: ${status}. Допустимо: ${ORDER_STATUSES.join(", ")}`,
+                });
+            }
 
             await ensureCompletedAtColumn();
             await pool.query(
@@ -892,16 +915,22 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             if (!rows.length) return res.json({ ok: true });
 
             const item = rowToPanelDto(rows[0]);
-            res.json({ ok: true });
+            // Отдаём заказ целиком: клиенту нужен свежий item, чтобы обновить
+            // строку без перезагрузки списка.
+            res.json({ ok: true, item });
 
             if (typeof broadcastToAdmins === "function") {
                 broadcastToAdmins({ type: "order_updated", companyId, order: item });
             }
         } catch (e) {
-            console.error("patch status current order", e);
-            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+            const detail = e?.sqlMessage || e?.message || String(e);
+            console.error("update order status:", e?.code || "", detail);
+            res.status(500).json({ ok: false, error: `Ошибка сервера: ${detail}` });
         }
-    });
+    };
+
+    router.put("/:id/status", updateStatusHandler);
+    router.patch("/:id/status", updateStatusHandler);
 
     return router;
 }
