@@ -1,5 +1,5 @@
 import pool from "../db.js";
-import { rowToPanelDto } from "../currentOrder.js";
+import { rowToPanelDto, PREORDER_LEAD_HOURS } from "../currentOrder.js";
 
 /**
  * activatePreorders(broadcastToAdmins)
@@ -7,9 +7,12 @@ import { rowToPanelDto } from "../currentOrder.js";
  * Автоматически переводит предзаказы в активные заказы за 2 часа до их scheduled_at
  * 
  * Логика:
- * 1. SELECT предзаказы: scheduled_at > NOW() (ещё не наступили) И 
- *    scheduled_at <= NOW() + 2 HOUR (до них осталось ≤ 2 часа),
- *    order_type='preorder', status NOT IN ('completed','cancelled')
+ * 1. SELECT предзаказы: scheduled_at <= NOW() + PREORDER_LEAD_HOURS,
+ *    order_type='preorder', status NOT IN ('completed','cancelled').
+ *    Условия "scheduled_at > NOW()" здесь СПЕЦИАЛЬНО нет: с ним предзаказ,
+ *    время которого уже прошло (создали задним числом либо сервер простоял
+ *    дольше окна), не активировался бы никогда и навсегда остался бы скрытым
+ *    от курьеров.
  * 2. UPDATE каждого: order_type='active', в защищённой транзакции
  * 3. broadcastToAdmins для каждого переведённого заказа
  * 4. Логирование результатов
@@ -27,9 +30,8 @@ export async function activatePreorders(broadcastToAdmins) {
         const [[{ db_now }]] = await conn.query(`SELECT NOW() as db_now`);
         console.log(`[activatePreorders] 🕐 Время БД: ${db_now}`);
         
-        // ✅ ПОЛНОСТЬЮ НА SQL: SELECT только те заказы, которые нужно активировать СЕЙЧАС
-        // Условие: scheduled_at > NOW() (ещё не наступили) И 
-        //          scheduled_at <= NOW() + 2 HOUR (до них осталось ≤ 2 часа)
+        // ✅ ПОЛНОСТЬЮ НА SQL: SELECT только те заказы, которые нужно активировать СЕЙЧАС.
+        // Берём всё, до чего осталось не больше окна, включая уже просроченное.
         // Здесь нужны только идентификаторы: полные данные для WS перечитываем
         // после UPDATE — иначе в событие уедет состояние заказа «до» активации.
         const [toActivate] = await conn.query(
@@ -38,8 +40,7 @@ export async function activatePreorders(broadcastToAdmins) {
              WHERE order_type = 'preorder'
                AND scheduled_at IS NOT NULL
                AND status NOT IN ('completed', 'cancelled')
-               AND scheduled_at > NOW()
-               AND scheduled_at <= DATE_ADD(NOW(), INTERVAL 2 HOUR)
+               AND scheduled_at <= DATE_ADD(NOW(), INTERVAL ${PREORDER_LEAD_HOURS} HOUR)
              ORDER BY scheduled_at ASC
              LIMIT 100`,
             []
@@ -119,6 +120,10 @@ export async function activatePreorders(broadcastToAdmins) {
                             type: 'order_updated',
                             companyId: row.company_id,
                             order: dto,
+                            // Признак для index.js: заказ стал рабочим именно
+                            // сейчас, курьеру нужно об этом сообщить. Раньше
+                            // активация проходила совсем молча.
+                            preorderActivated: true,
                         });
                     } catch (wsErr) {
                         console.error(

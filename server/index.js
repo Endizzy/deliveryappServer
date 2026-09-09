@@ -27,7 +27,7 @@ import { fileURLToPath } from "url";
 import { listUnits, createUnit, updateUnit, deleteUnit } from "./companyUnits.js";
 import { getReport, getMobileTodayReport } from "./getReport.js";
 import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js";
-import currentOrdersRouter, { PAYMENT_METHODS } from "./currentOrder.js";
+import currentOrdersRouter, { PAYMENT_METHODS, isPreorderNotYetActive } from "./currentOrder.js";
 import deliveryZonesRouter from "./deliveryZones.js";
 import createCustomersRouter from "./customers.js";
 import { getInvoiceSettings, saveInvoiceSettings } from "./invoiceSettings.js";
@@ -155,9 +155,17 @@ function broadcastToAll(payload) {
     const msg = JSON.stringify(payload);
     if (!wss) return;
     const cid = payload?.companyId;
+
+    // Предзаказ, до которого ещё далеко, курьерам не показываем: в их списке
+    // его всё равно нет (фильтр в mobileOrdersRouter), а WS-событие подмешало
+    // бы заказ в обход фильтра. Диспетчеры получают событие как раньше —
+    // им предзаказы нужны сразу.
+    const adminsOnly = isPreorderNotYetActive(payload?.order);
+
     let sent = 0;
     wss.clients.forEach((ws) => {
         if (ws.readyState !== ws.OPEN) return;
+        if (adminsOnly && ws.clientType !== 'admin') return;
         if (typeof cid === 'number') {
             if (ws.companyId === cid && safeSend(ws, msg)) sent++;
         } else if (safeSend(ws, msg)) {
@@ -196,8 +204,21 @@ function broadcastAndPush(payload) {
     broadcastToAll(payload);
     if (typeof payload?.companyId !== "number") return;
 
+    // Заказ ещё не пора нести курьеру — молчим. Иначе курьер получил бы
+    // «Новый заказ» о заказе, которого нет в его списке: хуже, чем ничего.
+    // Push придёт в момент активации, ветка preorderActivated ниже.
+    if (isPreorderNotYetActive(payload.order)) return;
+
     if (payload.type === "order_created") {
         // назначенный заказ уйдёт только своему курьеру, свободный — всем
+        sendOrderPush(payload.companyId, payload.order);
+        return;
+    }
+
+    // Джоба перевела предзаказ в активные: именно сейчас он стал рабочим.
+    // sendOrderPush сам разберётся с адресатом — свободный заказ уйдёт всем
+    // курьерам, назначенный только своему (по courierId в заказе).
+    if (payload.type === "order_updated" && payload.preorderActivated) {
         sendOrderPush(payload.companyId, payload.order);
         return;
     }
@@ -587,7 +608,7 @@ wss.on('close', () => clearInterval(heartbeatTimer));
 // Предзаказы становятся активными за 2 часа до scheduled_at
 const cronJob = cron.schedule('* * * * *', async () => {
     try {
-        await activatePreorders(broadcastToAll);
+        await activatePreorders(broadcastAndPush);
     } catch (err) {
         console.error('[Cron] activatePreorders error:', err?.message ?? err);
     }

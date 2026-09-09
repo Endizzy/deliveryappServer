@@ -1,6 +1,11 @@
 import express from "express";
 import pool from "./db.js";
-import { resolveCompanyContext, ensureCompletedAtColumn, todayUtcRange } from "./currentOrder.js";
+import {
+  resolveCompanyContext,
+  ensureCompletedAtColumn,
+  todayUtcRange,
+  courierVisibleOrderSql,
+} from "./currentOrder.js";
 
 function rowToMobileOrderDto(r) {
   const addr = [
@@ -94,7 +99,16 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
 
       await ensureCompletedAtColumn();
 
-      const where  = ["co.company_id=?", "co.status != 'cancelled'"];
+      // Предзаказ появляется у курьера только когда до времени доставки
+      // осталось не больше окна активации. Раньше фильтра по типу здесь не
+      // было вовсе, и заказ на завтрашний вечер висел в списке весь день.
+      // Условие общее для всех вкладок, включая «Мои»: назначенный заранее
+      // предзаказ тоже не должен мешать курьеру до своего времени.
+      const where  = [
+        "co.company_id=?",
+        "co.status != 'cancelled'",
+        courierVisibleOrderSql("co"),
+      ];
       const params = [companyId];
 
       if (tab === "active") {
