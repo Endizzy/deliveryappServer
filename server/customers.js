@@ -172,6 +172,15 @@ export default function createCustomersRouter() {
             const phone = normalizePhone(req.params.phone);
             if (!phone) return res.status(400).json({ ok: false, error: "phone required" });
 
+            // Необязательный limit: форме создания заказа нужны только
+            // последние заказы клиента, а у постоянного их бывают десятки.
+            // Без параметра поведение прежнее — отдаём всё (вкладка «Клиенты»).
+            const rawLimit = Number(req.query.limit);
+            const limit =
+                Number.isFinite(rawLimit) && rawLimit > 0
+                    ? Math.min(Math.trunc(rawLimit), 100)
+                    : null;
+
             const [rows] = await pool.query(
                 `SELECT order_id, order_no, order_seq, status, order_type,
                         items_json, delivery_fee,
@@ -179,8 +188,9 @@ export default function createCustomersRouter() {
                         payment_method, created_at, scheduled_at, completed_at
                    FROM current_orders
                   WHERE company_id=? AND customer_phone=?
-                  ORDER BY created_at DESC, order_id DESC`,
-                [companyId, phone]
+                  ORDER BY created_at DESC, order_id DESC
+                  ${limit ? "LIMIT ?" : ""}`,
+                limit ? [companyId, phone, limit] : [companyId, phone]
             );
 
             const parseItems = (raw) => {
