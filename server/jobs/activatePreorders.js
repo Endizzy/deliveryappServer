@@ -116,13 +116,20 @@ export async function activatePreorders(broadcastToAdmins) {
 
                     const dto = rowToPanelDto(freshRows[0]);
                     try {
+                        // Тип события — order_created, а не order_updated, хотя
+                        // заказ существует давно. Для курьера он появляется
+                        // именно сейчас, и приложение вешает звук с баннером
+                        // ровно на order_created: у order_updated обработчик
+                        // молча добавляет заказ в список. Из-за этого молчания
+                        // срабатывал системный push, как будто приложение
+                        // свёрнуто, — вместо внутреннего уведомления.
+                        //
+                        // preorderActivated оставлен как пояснение источника
+                        // события: по нему видно, что заказ не новый.
                         broadcastToAdmins({
-                            type: 'order_updated',
+                            type: 'order_created',
                             companyId: row.company_id,
                             order: dto,
-                            // Признак для index.js: заказ стал рабочим именно
-                            // сейчас, курьеру нужно об этом сообщить. Раньше
-                            // активация проходила совсем молча.
                             preorderActivated: true,
                         });
                     } catch (wsErr) {

@@ -209,16 +209,15 @@ function broadcastAndPush(payload) {
     // Push придёт в момент активации, ветка preorderActivated ниже.
     if (isPreorderNotYetActive(payload.order)) return;
 
-    if (payload.type === "order_created") {
-        // назначенный заказ уйдёт только своему курьеру, свободный — всем
-        sendOrderPush(payload.companyId, payload.order);
-        return;
-    }
-
-    // Джоба перевела предзаказ в активные: именно сейчас он стал рабочим.
+    // Сюда попадает и активация предзаказа: джоба присылает order_created,
+    // потому что для курьера заказ появляется именно в этот момент.
     // sendOrderPush сам разберётся с адресатом — свободный заказ уйдёт всем
     // курьерам, назначенный только своему (по courierId в заказе).
-    if (payload.type === "order_updated" && payload.preorderActivated) {
+    //
+    // Если приложение открыто и сокет живой, этот push будет подавлен
+    // обработчиком в pushNotifications.js: заказ уже озвучен по WS, и
+    // claimOrderNotification не даст сработать второму сигналу.
+    if (payload.type === "order_created") {
         sendOrderPush(payload.companyId, payload.order);
         return;
     }
