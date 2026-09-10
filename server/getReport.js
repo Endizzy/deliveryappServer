@@ -33,6 +33,11 @@ export async function getReport(req, res) {
     }
 
     // 2) Calculate per-courier stats, plus a catch-all row for unassigned orders
+    // HAVING COUNT(os.order_id) > 0 в первой ветке: в отчёт попадают только
+    // курьеры, у которых за период были заказы. Раньше LEFT JOIN возвращал
+    // весь штат компании, и таблица наполовину состояла из строк с нулями —
+    // среди них терялись те, кто действительно работал.
+    //
     // Отбор идёт по операционному дню заказа (order_seq_date), а не по времени
     // последней правки. По updated_at отчёт «плыл»: сохранение старого заказа
     // переносило его выручку в день правки, а ночной заказ (создан до полуночи,
@@ -83,6 +88,7 @@ export async function getReport(req, res) {
           AND cu.role = 'courier'
       GROUP BY
           cu.user_id
+      HAVING COUNT(os.order_id) > 0
 
       UNION ALL
 
