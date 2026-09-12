@@ -185,7 +185,8 @@ export default function createCustomersRouter() {
                 `SELECT order_id, order_no, order_seq, status, order_type,
                         items_json, delivery_fee,
                         amount_subtotal, amount_discount, amount_total,
-                        payment_method, created_at, scheduled_at, completed_at
+                        payment_method, manual_discount_percent,
+                        created_at, scheduled_at, completed_at
                    FROM current_orders
                   WHERE company_id=? AND customer_phone=?
                   ORDER BY created_at DESC, order_id DESC
@@ -225,6 +226,10 @@ export default function createCustomersRouter() {
                 amountDiscount: Number(r.amount_discount) || 0,
                 amountTotal: Number(r.amount_total) || 0,
                 paymentMethod: r.payment_method,
+                // Разовая скидка: при повторе заказа она НЕ переносится, и без
+                // этого поля форма не смогла бы предупредить диспетчера, что
+                // прошлая сумма была ниже обычной.
+                manualDiscountPercent: Number(r.manual_discount_percent) || 0,
                 createdAt: r.created_at,
                 scheduledAt: r.scheduled_at,
                 completedAt: r.completed_at,
