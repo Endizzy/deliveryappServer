@@ -101,10 +101,16 @@ export async function activatePreorders(broadcastToAdmins) {
                     const [freshRows] = await conn.query(
                         `SELECT co.*,
                                 cu1.nickname AS courier_nickname,
-                                cu2.nickname AS pickup_nickname
+                                cu2.nickname AS pickup_nickname,
+                                COALESCE(
+                                    NULLIF(TRIM(cu3.nickname), ''),
+                                    NULLIF(TRIM(CONCAT_WS(' ', cu3.first_name, cu3.last_name)), ''),
+                                    cu3.email
+                                ) AS dispatcher_nickname
                            FROM current_orders co
                                 LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
                                 LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+                                LEFT JOIN users cu3 ON cu3.user_id = co.dispatcher_unit_id
                           WHERE co.order_id = ? LIMIT 1`,
                         [row.order_id]
                     );

@@ -172,6 +172,10 @@ export function rowToPanelDto(r) {
         pickupName: r.pickup_nickname || "",
         courierName: r.courier_nickname || "",
         dispatcherUnitId: r.dispatcher_unit_id,
+        // Кто принял заказ. У заказов, созданных до появления этой логики,
+        // автор не записан — там останется пустая строка, и панель покажет
+        // прочерк. Восстановить их авторство неоткуда.
+        dispatcherName: r.dispatcher_nickname || "",
         pickupId: r.pickup_unit_id,
         courierId: r.courier_unit_id,
 
@@ -181,6 +185,23 @@ export function rowToPanelDto(r) {
         geocodedAt: r.geocoded_at ?? null,
         geocodeProvider: r.geocode_provider ?? null,
     };
+}
+
+/**
+ * Кто создаёт заказ — id для current_orders.dispatcher_unit_id.
+ *
+ * Раньше здесь читался только user.unitId, но это поле есть лишь в курьерском
+ * токене: веб-токен админа собирается как { userId, role, companyId } (auth.js).
+ * Поэтому у всех заказов из админки автор записывался как NULL, и колонка
+ * «Диспетчер» пустовала. Порядок полей — тот же, что в mobileOrdersRouter.
+ *
+ * Возвращает null, если id определить не удалось: заказ важнее авторства,
+ * создание ронять нельзя.
+ */
+function resolveDispatcherId(user) {
+    const raw = user?.unitId ?? user?.unit_id ?? user?.userId ?? user?.id ?? null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 /** Разовая скидка на заказ: целое 0..100, всё остальное — 0 */
@@ -532,10 +553,16 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const sql = `
         SELECT co.*,
                cu1.nickname AS courier_nickname,
-               cu2.nickname AS pickup_nickname
+               cu2.nickname AS pickup_nickname,
+               COALESCE(
+                   NULLIF(TRIM(cu3.nickname), ''),
+                   NULLIF(TRIM(CONCAT_WS(' ', cu3.first_name, cu3.last_name)), ''),
+                   cu3.email
+               ) AS dispatcher_nickname
         FROM current_orders co
                  LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
                  LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+                 LEFT JOIN users cu3 ON cu3.user_id = co.dispatcher_unit_id
         WHERE ${where.join(" AND ")}
         ORDER BY ${orderBy}
         LIMIT 500`;
@@ -559,10 +586,16 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const sql = `
         SELECT co.*,
                cu1.nickname AS courier_nickname,
-               cu2.nickname AS pickup_nickname
+               cu2.nickname AS pickup_nickname,
+               COALESCE(
+                   NULLIF(TRIM(cu3.nickname), ''),
+                   NULLIF(TRIM(CONCAT_WS(' ', cu3.first_name, cu3.last_name)), ''),
+                   cu3.email
+               ) AS dispatcher_nickname
         FROM current_orders co
                  LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
                  LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+                 LEFT JOIN users cu3 ON cu3.user_id = co.dispatcher_unit_id
         WHERE co.company_id=? AND co.order_id=? LIMIT 1`;
             const [rows] = await pool.query(sql, [companyId, id]);
             if (!rows.length) return res.status(404).json({ ok: false, error: "Заказ не найден" });
@@ -673,7 +706,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                         [
                             companyId, orderNo, nextSeq, order_seq_date,
                             order_type, b.status || "new", scheduled_at,
-                            b.courierId || null, b.pickupId || null, (user && user.unitId) || null,
+                            b.courierId || null, b.pickupId || null, resolveDispatcherId(user),
                             payment_method,
                             delivery_fee,
                             b.customer, b.phone,
@@ -746,10 +779,16 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const [rows] = await pool.query(
                 `SELECT co.*,
                 cu1.nickname AS courier_nickname,
-                cu2.nickname AS pickup_nickname
+                cu2.nickname AS pickup_nickname,
+                COALESCE(
+                    NULLIF(TRIM(cu3.nickname), ''),
+                    NULLIF(TRIM(CONCAT_WS(' ', cu3.first_name, cu3.last_name)), ''),
+                    cu3.email
+                ) AS dispatcher_nickname
          FROM current_orders co
                   LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
                   LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+                  LEFT JOIN users cu3 ON cu3.user_id = co.dispatcher_unit_id
          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, order_id]
             );
@@ -876,10 +915,16 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const [rows] = await pool.query(
                 `SELECT co.*,
                 cu1.nickname AS courier_nickname,
-                cu2.nickname AS pickup_nickname
+                cu2.nickname AS pickup_nickname,
+                COALESCE(
+                    NULLIF(TRIM(cu3.nickname), ''),
+                    NULLIF(TRIM(CONCAT_WS(' ', cu3.first_name, cu3.last_name)), ''),
+                    cu3.email
+                ) AS dispatcher_nickname
          FROM current_orders co
                   LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
                   LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+                  LEFT JOIN users cu3 ON cu3.user_id = co.dispatcher_unit_id
          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, id]
             );
@@ -954,10 +999,16 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const [rows] = await pool.query(
                 `SELECT co.*,
                 cu1.nickname AS courier_nickname,
-                cu2.nickname AS pickup_nickname
+                cu2.nickname AS pickup_nickname,
+                COALESCE(
+                    NULLIF(TRIM(cu3.nickname), ''),
+                    NULLIF(TRIM(CONCAT_WS(' ', cu3.first_name, cu3.last_name)), ''),
+                    cu3.email
+                ) AS dispatcher_nickname
          FROM current_orders co
                   LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
                   LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+                  LEFT JOIN users cu3 ON cu3.user_id = co.dispatcher_unit_id
          WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
                 [companyId, id]
             );
