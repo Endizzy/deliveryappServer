@@ -30,6 +30,7 @@ import { getCouriers, searchMenuItems, getPickupPoints } from "./orderSupport.js
 import currentOrdersRouter, { PAYMENT_METHODS, isPreorderNotYetActive } from "./currentOrder.js";
 import deliveryZonesRouter from "./deliveryZones.js";
 import createCustomersRouter from "./customers.js";
+import createAnalyticsRouter from "./analytics.js";
 import { getInvoiceSettings, saveInvoiceSettings } from "./invoiceSettings.js";
 import {
     savePushToken,
@@ -323,6 +324,9 @@ app.use("/api/delivery-zones", authMiddleware, deliveryZonesRouter);
 
 // ─── Customers (контроль клиентов, admin) ────────────────────────────────────
 app.use("/api/customers", authMiddleware, createCustomersRouter());
+
+// ─── Аналитика (вкладка «Анализ», только чтение) ─────────────────────────────
+app.use("/api/analytics", authMiddleware, createAnalyticsRouter());
 
 // ─── Invoice settings (реквизиты накладной, per-company) ─────────────────────
 app.get("/api/invoice-settings", authMiddleware, getInvoiceSettings);

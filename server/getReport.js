@@ -64,7 +64,13 @@ export async function getReport(req, res) {
               '$[*]' COLUMNS (quantity INT PATH '$.quantity')
           ) AS jt ON TRUE
           WHERE co.company_id = ?
-            AND COALESCE(co.order_seq_date, DATE(co.completed_at), DATE(co.updated_at)) BETWEEN ? AND ?
+            /* Колонка сравнивается напрямую: обёрнутая в COALESCE, она
+               переставала быть сравнимой по индексу, и отбор по датам шёл
+               построчным перебором. Запасные DATE(completed_at) и
+               DATE(updated_at) не нужны — пустых order_seq_date в базе нет
+               и появиться не может: deriveOrderSeqDate возвращает дату в
+               обеих ветках, а INSERT заполняет колонку всегда. */
+            AND co.order_seq_date BETWEEN ? AND ?
             AND co.status = 'completed'
           GROUP BY co.order_id
       )
