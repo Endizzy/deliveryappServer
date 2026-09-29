@@ -31,6 +31,7 @@ import currentOrdersRouter, { PAYMENT_METHODS, isPreorderNotYetActive } from "./
 import deliveryZonesRouter from "./deliveryZones.js";
 import createCustomersRouter from "./customers.js";
 import createAnalyticsRouter from "./analytics.js";
+import createLoyaltyRouter from "./loyalty.js";
 import { getInvoiceSettings, saveInvoiceSettings } from "./invoiceSettings.js";
 import {
     savePushToken,
@@ -327,6 +328,9 @@ app.use("/api/customers", authMiddleware, createCustomersRouter());
 
 // ─── Аналитика (вкладка «Анализ», только чтение) ─────────────────────────────
 app.use("/api/analytics", authMiddleware, createAnalyticsRouter());
+
+// ─── Программа лояльности (скидка на N+1-й заказ клиента) ────────────────────
+app.use("/api/loyalty", authMiddleware, createLoyaltyRouter());
 
 // ─── Invoice settings (реквизиты накладной, per-company) ─────────────────────
 app.get("/api/invoice-settings", authMiddleware, getInvoiceSettings);

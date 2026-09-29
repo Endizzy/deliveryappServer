@@ -2,6 +2,8 @@ import express from "express";
 import pool from "./db.js";
 import crypto from "crypto";
 import { getCustomerDiscount } from "./customers.js";
+import { getLoyaltyOffer, loyaltyColumnsReady } from "./loyalty.js";
+import { loyaltyDiscountCents, pickOrderDiscount } from "./loyaltyLogic.js";
 
 /** --- helpers --- */
 export async function resolveCompanyContext(req, res) {
@@ -43,7 +45,11 @@ function toMySQLDatetime(isoString) {
 //
 // Обе скидки процентные, поэтому применяется БОЛЬШАЯ из них, а не сумма:
 // карта −10% и разовая −20% должны дать −20%, а не −30%.
-function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manualPercent = 0) {
+//
+// loyalty (необяз.): { type: 'percent'|'fixed', value } — скидка программы
+// лояльности. Участвует в том же выборе «большая из скидок». Флаг loyalty_won
+// в результате говорит, что применилась именно она (только тогда она «сгорает»).
+function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manualPercent = 0, loyalty = null) {
     const toCents = (amount) => {
         const s = typeof amount === "string" ? amount.trim().replace(",", ".") : amount;
         const n = Number(s);
@@ -116,8 +122,13 @@ function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manu
             ? Math.round((percentBaseCents * Math.min(manual, 100)) / 100)
             : 0;
 
-    // Не складываем: клиент получает лучшее из двух условий
-    const orderDiscountCents = Math.max(personalCents, manualCents);
+    // Скидка лояльности (программа «N заказов — скидка на следующий»)
+    const loyaltyCents = loyaltyDiscountCents(loyalty, itemsTotalCents, percentBaseCents);
+
+    // Не складываем: клиент получает лучшее из условий
+    const { orderDiscountCents, loyaltyWon } = pickOrderDiscount(
+        personalCents, manualCents, loyaltyCents
+    );
     const itemsAfterOrderDiscCents = Math.max(0, itemsTotalCents - orderDiscountCents);
 
     // amount_discount = поштучные скидки + персональная скидка клиента
@@ -135,6 +146,7 @@ function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manu
         amount_total: formatCents(totalCents),
         delivery_fee: formatCents(deliveryFeeCents),
         order_discount_cents: orderDiscountCents,
+        loyalty_won: loyaltyWon,
     };
 }
 
@@ -166,6 +178,11 @@ export function rowToPanelDto(r) {
         // Разовая скидка на заказ: без неё форма редактирования не смогла бы
         // показать выбранный процент и потеряла бы его при сохранении.
         manualDiscountPercent: Number(r.manual_discount_percent || 0),
+        // Скидка программы лояльности, выданная этому заказу (для формы правки)
+        loyaltyApplied: Number(r.loyalty_applied || 0) === 1,
+        loyaltyType: r.loyalty_type ?? null,
+        loyaltyValue: r.loyalty_value != null ? Number(r.loyalty_value) : null,
+        loyaltyOrderNo: r.loyalty_order_no != null ? Number(r.loyalty_order_no) : null,
         customer: r.customer_name,
         phone: r.customer_phone,
         address: addr,
@@ -645,9 +662,21 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             }
 
             const manualDiscountPercent = coerceManualDiscount(b.manualDiscountPercent);
-            const { items, amount_subtotal, amount_discount, amount_total, delivery_fee } =
+
+            // Скидка лояльности: если у клиента «пришла» очередь (N заказов уже
+            // было). getLoyaltyOffer не бросает исключений: при любой ошибке
+            // скидки просто нет. Оператор может отказаться (applyLoyalty=false) —
+            // тогда скидка не применяется и не сгорает.
+            let loyaltyOffer = null;
+            if (b.applyLoyalty !== false) {
+                const offer = await getLoyaltyOffer(companyId, b.phone);
+                if (offer && offer.willApply) loyaltyOffer = offer;
+            }
+
+            const { items, amount_subtotal, amount_discount, amount_total, delivery_fee, loyalty_won } =
                 normalizeItemsAndAmounts(
-                    b.selectedItems || [], b.deliveryFee, orderDiscount, manualDiscountPercent
+                    b.selectedItems || [], b.deliveryFee, orderDiscount, manualDiscountPercent,
+                    loyaltyOffer
                 );
             if (!b.payment)
                 return res.status(400).json({ ok: false, error: "Способ оплаты обязателен" });
@@ -716,6 +745,22 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                             JSON.stringify(items), amount_subtotal, amount_discount, amount_total
                         ]
                     );
+
+                    // Отмечаем, что заказу выдана скидка лояльности: с этого заказа
+                    // счёт клиента начинается заново. Ошибка здесь не должна
+                    // ронять оформление заказа — только лог.
+                    if (loyalty_won && loyaltyOffer) {
+                        try {
+                            await conn.query(
+                                `UPDATE current_orders
+                                    SET loyalty_applied=1, loyalty_type=?, loyalty_value=?, loyalty_order_no=?
+                                  WHERE company_id=? AND order_id=?`,
+                                [loyaltyOffer.type, loyaltyOffer.value, loyaltyOffer.position, companyId, ins.insertId]
+                            );
+                        } catch (le) {
+                            console.error("[loyalty] не удалось отметить заказ", ins.insertId, le?.message ?? le);
+                        }
+                    }
 
                     await conn.commit();
                     result = ins;
@@ -836,9 +881,31 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             }
 
             const manualDiscountPercent = coerceManualDiscount(b.manualDiscountPercent);
-            const { items, amount_subtotal, amount_discount, amount_total, delivery_fee } =
+
+            // Скидка лояльности, уже выданная ЭТОМУ заказу, при правке сохраняется
+            // (берём то, что записано в заказе). Новая скидка при правке не
+            // выдаётся: она определяется только при создании.
+            let loyaltyPrev = null;
+            try {
+                if (await loyaltyColumnsReady()) {
+                    const [[lp]] = await pool.query(
+                        `SELECT loyalty_applied, loyalty_type, loyalty_value
+                           FROM current_orders WHERE company_id=? AND order_id=? LIMIT 1`,
+                        [companyId, id]
+                    );
+                    if (lp && Number(lp.loyalty_applied) === 1) {
+                        loyaltyPrev = { type: lp.loyalty_type, value: Number(lp.loyalty_value) || 0 };
+                    }
+                }
+            } catch (e) {
+                console.warn("[loyalty] read prev (edit) failed:", e?.message ?? e);
+            }
+            const loyaltyForCalc = b.applyLoyalty === false ? null : loyaltyPrev;
+
+            const { items, amount_subtotal, amount_discount, amount_total, delivery_fee, loyalty_won } =
                 normalizeItemsAndAmounts(
-                    b.selectedItems || [], b.deliveryFee, orderDiscount, manualDiscountPercent
+                    b.selectedItems || [], b.deliveryFee, orderDiscount, manualDiscountPercent,
+                    loyaltyForCalc
                 );
 
             // Кто вёз заказ до правки: нужно, чтобы отличить «назначили курьера»
@@ -911,6 +978,21 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     id,
                 ]
             );
+
+            // Если заказу была выдана скидка лояльности, а после правки она не
+            // применилась (оператор снял её или другая скидка оказалась больше),
+            // возвращаем её клиенту: снимаем отметку — счёт продолжится как
+            // будто скидка не выдавалась.
+            if (loyaltyPrev && !loyalty_won) {
+                try {
+                    await pool.query(
+                        `UPDATE current_orders SET loyalty_applied=0 WHERE company_id=? AND order_id=?`,
+                        [companyId, id]
+                    );
+                } catch (le) {
+                    console.error("[loyalty] не удалось снять отметку с заказа", id, le?.message ?? le);
+                }
+            }
 
             const [rows] = await pool.query(
                 `SELECT co.*,
