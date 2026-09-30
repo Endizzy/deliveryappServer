@@ -5,6 +5,7 @@ import {
     evaluateProgress,
     loyaltyDiscountCents,
     pickOrderDiscount,
+    classifyProgress,
 } from "../loyaltyLogic.js";
 
 test("evaluateProgress: при N=10 скидка на 11-м заказе", () => {
@@ -80,4 +81,32 @@ test("sanitizeLoyaltySettings: неизвестный тип → fixed, enabled 
     const r = sanitizeLoyaltySettings({ enabled: "yes", ordersBefore: 3, type: "weird", value: 2 });
     assert.equal(r.value.type, "fixed");
     assert.equal(r.value.enabled, false);
+});
+
+test("classifyProgress: копят / скоро / готово", () => {
+    assert.deepEqual(classifyProgress(3, 10), { ordersCount: 3, ordersBefore: 10, ready: false, remaining: 7, soon: false });
+    assert.deepEqual(classifyProgress(8, 10), { ordersCount: 8, ordersBefore: 10, ready: false, remaining: 2, soon: true });
+    assert.deepEqual(classifyProgress(9, 10), { ordersCount: 9, ordersBefore: 10, ready: false, remaining: 1, soon: true });
+    assert.deepEqual(classifyProgress(10, 10), { ordersCount: 10, ordersBefore: 10, ready: true, remaining: 0, soon: false });
+});
+
+test("classifyProgress: накопили больше порога (N уменьшили) — готово, remaining не отрицательный", () => {
+    const p = classifyProgress(15, 10);
+    assert.equal(p.ready, true);
+    assert.equal(p.remaining, 0);
+    assert.equal(p.soon, false);
+});
+
+test("classifyProgress: согласована с evaluateProgress (ready ⇔ willApply)", () => {
+    for (let n = 1; n <= 6; n++) {
+        for (let c = 0; c <= 8; c++) {
+            assert.equal(classifyProgress(c, n).ready, evaluateProgress(c, n).willApply);
+        }
+    }
+});
+
+test("classifyProgress: мусор на входе не ломает", () => {
+    assert.equal(classifyProgress(undefined, undefined).ordersBefore, 1);
+    assert.equal(classifyProgress("abc", 5).ordersCount, 0);
+    assert.equal(classifyProgress(-3, 5).remaining, 5);
 });

@@ -2,7 +2,7 @@ import { Router } from "express";
 import pool from "./db.js";
 import { resolveCompanyContext } from "./currentOrder.js";
 import { normalizePhone } from "./customers.js";
-import { sanitizeLoyaltySettings, evaluateProgress } from "./loyaltyLogic.js";
+import { sanitizeLoyaltySettings, evaluateProgress, classifyProgress } from "./loyaltyLogic.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Программа лояльности: скидка на (N+1)-й заказ клиента.
@@ -192,6 +192,96 @@ export default function createLoyaltyRouter() {
             res.json({ ok: true, settings });
         } catch (e) {
             console.error("loyalty settings save error:", e);
+            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+        }
+    });
+
+    // GET /api/loyalty/customers
+    // Клиенты, которые копят заказы до скидки (для вкладки «Лояльность»).
+    // Только чтение. Считаем теми же правилами, что и getLoyaltyOffer: заказы не
+    // отменённые, созданные после запуска программы и после последнего заказа
+    // со скидкой лояльности. Программа выключена → пустой список.
+    router.get("/customers", async (req, res) => {
+        try {
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId } = ctx;
+
+            const settings = await getLoyaltySettings(companyId);
+            if (!settings.enabled || !(settings.value > 0) || !(await loyaltyColumnsReady())) {
+                return res.json({ ok: true, enabled: false, items: [], summary: { ready: 0, soon: 0, total: 0 } });
+            }
+
+            const LIMIT = 500;
+            const [rows] = await pool.query(
+                `SELECT o.customer_phone AS phone,
+                        (SELECT o2.customer_name
+                           FROM current_orders o2
+                          WHERE o2.company_id = ?
+                            AND o2.customer_phone = o.customer_phone
+                          ORDER BY o2.order_id DESC
+                          LIMIT 1)              AS name,
+                        COUNT(*)                AS cnt,
+                        MAX(o.created_at)       AS last_order_at
+                   FROM current_orders o
+                   LEFT JOIN (
+                         SELECT customer_phone, MAX(order_id) AS last_loy
+                           FROM current_orders
+                          WHERE company_id = ?
+                            AND loyalty_applied = 1
+                            AND status <> 'cancelled'
+                          GROUP BY customer_phone) l
+                     ON l.customer_phone = o.customer_phone
+                  WHERE o.company_id = ?
+                    AND o.customer_phone IS NOT NULL
+                    AND o.customer_phone <> ''
+                    AND o.status <> 'cancelled'
+                    AND o.created_at >= (
+                          SELECT COALESCE(active_since, '1970-01-01 00:00:00')
+                            FROM loyalty_settings WHERE company_id = ?)
+                    AND o.order_id > COALESCE(l.last_loy, 0)
+                  GROUP BY o.customer_phone
+                  ORDER BY cnt DESC, last_order_at DESC
+                  LIMIT ${LIMIT + 1}`,
+                [companyId, companyId, companyId, companyId]
+            );
+
+            const truncated = rows.length > LIMIT;
+            const items = rows.slice(0, LIMIT).map((r) => {
+                const p = classifyProgress(r.cnt, settings.ordersBefore);
+                return {
+                    phone: r.phone,
+                    name: r.name || "",
+                    ordersCount: p.ordersCount,
+                    remaining: p.remaining,
+                    ready: p.ready,
+                    soon: p.soon,
+                    lastOrderAt: r.last_order_at ?? null,
+                };
+            });
+
+            const summary = items.reduce(
+                (acc, c) => {
+                    acc.total += 1;
+                    if (c.ready) acc.ready += 1;
+                    else if (c.soon) acc.soon += 1;
+                    return acc;
+                },
+                { ready: 0, soon: 0, total: 0 }
+            );
+
+            res.json({
+                ok: true,
+                enabled: true,
+                ordersBefore: settings.ordersBefore,
+                type: settings.type,
+                value: settings.value,
+                truncated,
+                items,
+                summary,
+            });
+        } catch (e) {
+            console.error("loyalty customers error:", e);
             res.status(500).json({ ok: false, error: "Ошибка сервера" });
         }
     });

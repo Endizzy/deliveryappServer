@@ -49,6 +49,29 @@ export function evaluateProgress(completedInCycle, ordersBefore) {
 }
 
 /**
+ * Состояние клиента в программе (для списка владельца).
+ * completedInCycle — сколько его заказов накоплено в текущем цикле.
+ *  • ready — скидка уже положена (следующий заказ будет со скидкой);
+ *  • soon  — до скидки осталось 1–2 заказа;
+ *  • remaining — сколько заказов осталось до скидки (0, если ready).
+ */
+export const LOYALTY_SOON_THRESHOLD = 2;
+
+export function classifyProgress(completedInCycle, ordersBefore) {
+    const cnt = Math.max(0, Math.trunc(Number(completedInCycle)) || 0);
+    const n = Math.max(1, Math.trunc(Number(ordersBefore)) || 1);
+    const ready = cnt >= n;
+    const remaining = ready ? 0 : n - cnt;
+    return {
+        ordersCount: cnt,
+        ordersBefore: n,
+        ready,
+        remaining,
+        soon: !ready && remaining <= LOYALTY_SOON_THRESHOLD,
+    };
+}
+
+/**
  * Скидка лояльности в центах.
  * Формулы совпадают с постоянной скидкой клиента (см. normalizeItemsAndAmounts
  * и utils/money.js на клиенте):
