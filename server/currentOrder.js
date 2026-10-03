@@ -1114,6 +1114,109 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
     router.put("/:id/status", updateStatusHandler);
     router.patch("/:id/status", updateStatusHandler);
 
+    // PUT|PATCH /api/current-orders/:id/courier  {courierId: number|null}
+    // Смена ТОЛЬКО курьера заказа (быстрый выбор в колонке «Courier» панели).
+    //
+    // Как и маршрут статуса, не трогает суммы, скидки и остальные поля заказа —
+    // полный PUT /:id пересобирает заказ целиком.
+    //
+    // Рассылка и push — те же, что у полного PUT /:id: событие order_updated с
+    // признаками courierAssigned / prevCourierId. По ним index.js шлёт адресный
+    // push новому курьеру, а мобильное приложение само решает, чей это заказ
+    // (новому — в «Мои», прежнему — убрать из списка, освобождённый — в
+    // «Доступные»). Если курьер не изменился, ничего не пишем и не рассылаем.
+    const updateCourierHandler = async (req, res) => {
+        try {
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId } = ctx;
+            const id = Number(req.params.id);
+            if (!Number.isInteger(id) || id <= 0)
+                return res.status(400).json({ ok: false, error: "Некорректный номер заказа" });
+
+            // Поле обязательно: пустое тело не должно молча снимать курьера.
+            // null / "" / 0 — осознанное «Неназначен».
+            const raw = req.body?.courierId;
+            if (raw === undefined)
+                return res.status(400).json({ ok: false, error: "Не указан курьер" });
+            const courierId =
+                raw === null || raw === undefined || raw === "" || Number(raw) === 0
+                    ? null
+                    : Number(raw);
+            if (courierId !== null && (!Number.isInteger(courierId) || courierId < 0))
+                return res.status(400).json({ ok: false, error: "Некорректный курьер" });
+
+            const [[prev]] = await pool.query(
+                "SELECT courier_unit_id, status FROM current_orders WHERE company_id=? AND order_id=? LIMIT 1",
+                [companyId, id]
+            );
+            if (!prev) return res.status(404).json({ ok: false, error: "Заказ не найден" });
+
+            // Назначать можно только активного курьера этой же компании
+            if (courierId !== null) {
+                const [[c]] = await pool.query(
+                    "SELECT user_id FROM users WHERE user_id=? AND company_id=? AND role='courier' AND is_active=1 LIMIT 1",
+                    [courierId, companyId]
+                );
+                if (!c) return res.status(400).json({ ok: false, error: "Курьер не найден" });
+            }
+
+            const prevCourierId = prev.courier_unit_id ?? null;
+            const changed = String(prevCourierId ?? "") !== String(courierId ?? "");
+
+            if (changed) {
+                await pool.query(
+                    `UPDATE current_orders
+                        SET courier_unit_id=?, updated_at=NOW()
+                      WHERE company_id=? AND order_id=?`,
+                    [courierId, companyId, id]
+                );
+            }
+
+            const [rows] = await pool.query(
+                `SELECT co.*,
+                cu1.nickname AS courier_nickname,
+                cu2.nickname AS pickup_nickname,
+                COALESCE(
+                    NULLIF(TRIM(cu3.nickname), ''),
+                    NULLIF(TRIM(CONCAT_WS(' ', cu3.first_name, cu3.last_name)), ''),
+                    cu3.email
+                ) AS dispatcher_nickname
+         FROM current_orders co
+                  LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
+                  LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+                  LEFT JOIN users cu3 ON cu3.user_id = co.dispatcher_unit_id
+         WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
+                [companyId, id]
+            );
+            if (!rows.length) return res.status(404).json({ ok: false, error: "Заказ не найден" });
+
+            const item = rowToPanelDto(rows[0]);
+            res.json({ ok: true, item });
+
+            if (changed && typeof broadcastToAdmins === "function") {
+                // Закрытому заказу (завершён/отменён) «новый заказ» курьеру не
+                // шлём: push вышел бы о заказе, которого нет в его списке.
+                const finished = ["completed", "cancelled"].includes(String(item.status || ""));
+                const newCourierId = item.courierId ?? null;
+                broadcastToAdmins({
+                    type: "order_updated",
+                    companyId,
+                    order: item,
+                    courierAssigned: newCourierId != null && !finished,
+                    prevCourierId: prevCourierId ?? null,
+                });
+            }
+        } catch (e) {
+            const detail = e?.sqlMessage || e?.message || String(e);
+            console.error("update order courier:", e?.code || "", detail);
+            res.status(500).json({ ok: false, error: `Ошибка сервера: ${detail}` });
+        }
+    };
+
+    router.put("/:id/courier", updateCourierHandler);
+    router.patch("/:id/courier", updateCourierHandler);
+
     return router;
 }
 
