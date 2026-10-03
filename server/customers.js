@@ -242,6 +242,66 @@ export default function createCustomersRouter() {
         }
     });
 
+    // ── GET /api/customers/:phone/addresses ──────────────────────────────────
+    // Уникальные адреса доставки клиента (последние использованные первыми).
+    // Нужны форме создания заказа: клиент бывает на нескольких адресах, и
+    // диспетчер выбирает нужный одним кликом. Только чтение, ничего не меняет.
+    router.get("/:phone/addresses", async (req, res) => {
+        try {
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId } = ctx;
+            const phone = normalizePhone(req.params.phone);
+            if (!phone) return res.status(400).json({ ok: false, error: "phone required" });
+
+            const rawLimit = Number(req.query.limit);
+            const limit =
+                Number.isFinite(rawLimit) && rawLimit > 0
+                    ? Math.min(Math.trunc(rawLimit), 20)
+                    : 6;
+
+            const [rows] = await pool.query(
+                `SELECT order_id, address_street, address_house, address_building,
+                        address_apartment, address_floor, address_code, created_at
+                   FROM current_orders
+                  WHERE company_id=? AND customer_phone=?
+                    AND COALESCE(TRIM(address_street), '') <> ''
+                  ORDER BY created_at DESC, order_id DESC
+                  LIMIT 100`,
+                [companyId, phone]
+            );
+
+            const clean = (v) => (v == null ? "" : String(v).trim());
+            const byKey = new Map();
+            for (const r of rows) {
+                const a = {
+                    street: clean(r.address_street),
+                    house: clean(r.address_house),
+                    building: clean(r.address_building),
+                    apart: clean(r.address_apartment),
+                    floor: clean(r.address_floor),
+                    code: clean(r.address_code),
+                };
+                // Один и тот же адрес в разном регистре — это один адрес
+                const key = [a.street, a.house, a.building, a.apart]
+                    .map((x) => x.toLowerCase())
+                    .join("|");
+                const found = byKey.get(key);
+                if (found) {
+                    found.count += 1;
+                } else {
+                    // Строки идут от новых к старым: этаж и код берём из самого свежего заказа
+                    byKey.set(key, { ...a, count: 1, lastAt: r.created_at });
+                }
+            }
+
+            res.json({ ok: true, items: Array.from(byKey.values()).slice(0, limit) });
+        } catch (e) {
+            console.error("customer addresses error:", e);
+            res.status(500).json({ ok: false, error: "Ошибка сервера" });
+        }
+    });
+
     // ── PUT /api/customers/:phone/discount ───────────────────────────────────
     // body: { type: 'percent'|'fixed', value: number, note?: string }
     router.put("/:phone/discount", async (req, res) => {
