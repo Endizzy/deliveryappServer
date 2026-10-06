@@ -487,6 +487,36 @@ function rowToMapDto(r) {
 export function currentOrdersRouter({ broadcastToAdmins }) {
     const router = express.Router();
 
+    // GET /api/current-orders/next-seq?orderType=active|preorder&scheduledAt=ISO
+    // Только чтение: показывает номер, который получил бы заказ, созданный
+    // прямо сейчас (для печати накладной до создания заказа). Ничего не
+    // бронирует и не пишет в БД. Расчёт тот же, что при создании заказа:
+    // «операционный день» + следующий номер за этот день.
+    // ВАЖНО: маршрут стоит выше "/:id", иначе "next-seq" был бы принят за id.
+    router.get("/next-seq", async (req, res) => {
+        try {
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId } = ctx;
+
+            const order_type = req.query.orderType === "preorder" ? "preorder" : "active";
+            const scheduled_at = toMySQLDatetime(req.query.scheduledAt);
+            const order_seq_date = deriveOrderSeqDate(order_type, scheduled_at);
+
+            const [rows] = await pool.query(
+                `SELECT COALESCE(MAX(order_seq), 0) AS max_seq
+           FROM current_orders
+          WHERE company_id=? AND order_seq_date=?`,
+                [companyId, order_seq_date]
+            );
+            const seq = Number(rows[0]?.max_seq || 0) + 1;
+            return res.json({ ok: true, seq, orderDay: order_seq_date });
+        } catch (e) {
+            console.error("GET /current-orders/next-seq error:", e);
+            return res.status(500).json({ ok: false, error: "Не удалось определить номер заказа" });
+        }
+    });
+
     // GET /api/current-orders/map  (для карты: только активные + с координатами)
     router.get("/map", async (req, res) => {
         try {
