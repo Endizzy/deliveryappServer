@@ -1247,6 +1247,91 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
     router.put("/:id/courier", updateCourierHandler);
     router.patch("/:id/courier", updateCourierHandler);
 
+    // PUT|PATCH /api/current-orders/:id/pickup  {pickupId: number}
+    // Смена ТОЛЬКО ресторана комплектации заказа (быстрый выбор в колонке
+    // «Ресторан» панели заказов). Суммы, скидки, статус, курьер и остальные
+    // поля не трогаются — полный PUT /:id пересобирает заказ целиком.
+    //
+    // Ресторан — активный пользователь компании с ролью admin (тот же список,
+    // что отдаёт /order-support/pickup-points). Убрать ресторан нельзя: форма
+    // заказа его требует, поэтому pickupId обязателен.
+    //
+    // Рассылка — обычное order_updated с заказом целиком (как у смены статуса):
+    // панели других диспетчеров обновят строку, курьерское приложение подхватит
+    // новое название. courierAssigned не выставляем — push-уведомления не нужны.
+    // Если ресторан не изменился, ничего не пишем и не рассылаем.
+    const updatePickupHandler = async (req, res) => {
+        try {
+            const ctx = await resolveCompanyContext(req, res);
+            if (!ctx) return;
+            const { companyId } = ctx;
+            const id = Number(req.params.id);
+            if (!Number.isInteger(id) || id <= 0)
+                return res.status(400).json({ ok: false, error: "Некорректный номер заказа" });
+
+            const pickupId = Number(req.body?.pickupId);
+            if (!Number.isInteger(pickupId) || pickupId <= 0)
+                return res.status(400).json({ ok: false, error: "Не указан ресторан" });
+
+            const [[prev]] = await pool.query(
+                "SELECT pickup_unit_id FROM current_orders WHERE company_id=? AND order_id=? LIMIT 1",
+                [companyId, id]
+            );
+            if (!prev) return res.status(404).json({ ok: false, error: "Заказ не найден" });
+
+            const prevPickupId = prev.pickup_unit_id ?? null;
+            const changed = String(prevPickupId ?? "") !== String(pickupId);
+
+            if (changed) {
+                // Назначать можно только активный ресторан этой же компании
+                const [[p]] = await pool.query(
+                    "SELECT user_id FROM users WHERE user_id=? AND company_id=? AND role='admin' AND is_active=1 LIMIT 1",
+                    [pickupId, companyId]
+                );
+                if (!p) return res.status(400).json({ ok: false, error: "Ресторан не найден" });
+
+                await pool.query(
+                    `UPDATE current_orders
+                        SET pickup_unit_id=?, updated_at=NOW()
+                      WHERE company_id=? AND order_id=?`,
+                    [pickupId, companyId, id]
+                );
+            }
+
+            const [rows] = await pool.query(
+                `SELECT co.*,
+                cu1.nickname AS courier_nickname,
+                cu2.nickname AS pickup_nickname,
+                COALESCE(
+                    NULLIF(TRIM(cu3.nickname), ''),
+                    NULLIF(TRIM(CONCAT_WS(' ', cu3.first_name, cu3.last_name)), ''),
+                    cu3.email
+                ) AS dispatcher_nickname
+         FROM current_orders co
+                  LEFT JOIN users cu1 ON cu1.user_id = co.courier_unit_id
+                  LEFT JOIN users cu2 ON cu2.user_id = co.pickup_unit_id
+                  LEFT JOIN users cu3 ON cu3.user_id = co.dispatcher_unit_id
+         WHERE co.company_id=? AND co.order_id=? LIMIT 1`,
+                [companyId, id]
+            );
+            if (!rows.length) return res.status(404).json({ ok: false, error: "Заказ не найден" });
+
+            const item = rowToPanelDto(rows[0]);
+            res.json({ ok: true, item });
+
+            if (changed && typeof broadcastToAdmins === "function") {
+                broadcastToAdmins({ type: "order_updated", companyId, order: item });
+            }
+        } catch (e) {
+            const detail = e?.sqlMessage || e?.message || String(e);
+            console.error("update order pickup:", e?.code || "", detail);
+            res.status(500).json({ ok: false, error: `Ошибка сервера: ${detail}` });
+        }
+    };
+
+    router.put("/:id/pickup", updatePickupHandler);
+    router.patch("/:id/pickup", updatePickupHandler);
+
     return router;
 }
 
