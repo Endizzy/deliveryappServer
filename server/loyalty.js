@@ -2,7 +2,7 @@ import { Router } from "express";
 import pool from "./db.js";
 import { resolveCompanyContext } from "./currentOrder.js";
 import { normalizePhone } from "./customers.js";
-import { sanitizeLoyaltySettings, evaluateProgress, classifyProgress } from "./loyaltyLogic.js";
+import { sanitizeLoyaltySettings, evaluateProgress, classifyProgress, minOrderSqlClause } from "./loyaltyLogic.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Программа лояльности: скидка на (N+1)-й заказ клиента.
@@ -46,6 +46,32 @@ export async function loyaltyColumnsReady() {
     return _ready;
 }
 
+// Колонка loyalty_settings.min_order_amount (migrations/loyalty_min_order.sql).
+// Проверяем отдельно от основной миграции: пока колонки нет, порог = 0 и всё
+// работает как раньше. true кэшируем навсегда, false — на минуту.
+let _minReady = null;
+let _minCheckedAt = 0;
+
+export async function loyaltyMinColumnReady() {
+    if (_minReady === true) return true;
+    if (_minReady === false && Date.now() - _minCheckedAt < 60_000) return false;
+    try {
+        const [rows] = await pool.query(
+            `SELECT COUNT(*) AS n
+               FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'loyalty_settings'
+                AND COLUMN_NAME = 'min_order_amount'`
+        );
+        _minReady = Number(rows[0]?.n) === 1;
+    } catch (e) {
+        console.warn("[loyalty] проверка колонки min_order_amount не удалась:", e?.message ?? e);
+        _minReady = false;
+    }
+    _minCheckedAt = Date.now();
+    return _minReady;
+}
+
 function rowToSettings(r) {
     return {
         enabled: Number(r.enabled) === 1,
@@ -53,6 +79,7 @@ function rowToSettings(r) {
         type: r.discount_type === "percent" ? "percent" : "fixed",
         value: Number(r.discount_value) || 0,
         activeSince: r.active_since ?? null,
+        minOrderAmount: Number(r.min_order_amount) || 0,
     };
 }
 
@@ -62,14 +89,16 @@ const DEFAULT_SETTINGS = {
     type: "fixed",
     value: 0,
     activeSince: null,
+    minOrderAmount: 0,
 };
 
 /** Настройки компании (или значения по умолчанию). Не бросает исключений. */
 export async function getLoyaltySettings(companyId) {
     try {
         if (!(await loyaltyColumnsReady())) return { ...DEFAULT_SETTINGS };
+        const hasMin = await loyaltyMinColumnReady();
         const [rows] = await pool.query(
-            `SELECT enabled, orders_before, discount_type, discount_value, active_since
+            `SELECT enabled, orders_before, discount_type, discount_value, active_since${hasMin ? ", min_order_amount" : ""}
                FROM loyalty_settings WHERE company_id = ? LIMIT 1`,
             [companyId]
         );
@@ -88,6 +117,10 @@ export async function getLoyaltySettings(companyId) {
  * Считаем заказы клиента (не отменённые), созданные после запуска программы и
  * после последнего заказа со скидкой лояльности. Отмена заказа со скидкой
  * автоматически возвращает скидку — счётчика, который нужно чинить, нет.
+ *
+ * Если задана минимальная сумма заказа, в счёт идут только заказы с итогом
+ * (amount_total) не меньше неё. Сам заказ, на который положена скидка, порогом
+ * не ограничивается: скидку можно получить при любой сумме.
  */
 export async function getLoyaltyOffer(companyId, phoneRaw) {
     try {
@@ -97,6 +130,7 @@ export async function getLoyaltyOffer(companyId, phoneRaw) {
         const settings = await getLoyaltySettings(companyId);
         if (!settings.enabled || !(settings.value > 0)) return null;
 
+        const minClause = minOrderSqlClause(settings.minOrderAmount, "o");
         const [rows] = await pool.query(
             `SELECT COUNT(*) AS cnt
                FROM current_orders o
@@ -112,8 +146,8 @@ export async function getLoyaltyOffer(companyId, phoneRaw) {
                        WHERE x.company_id = ?
                          AND x.customer_phone = ?
                          AND x.loyalty_applied = 1
-                         AND x.status <> 'cancelled'), 0)`,
-            [companyId, phone, companyId, companyId, phone]
+                         AND x.status <> 'cancelled'), 0)${minClause.sql}`,
+            [companyId, phone, companyId, companyId, phone, ...minClause.params]
         );
 
         const { position, willApply, ordersBefore } = evaluateProgress(
@@ -126,6 +160,7 @@ export async function getLoyaltyOffer(companyId, phoneRaw) {
             ordersBefore,
             type: settings.type,
             value: settings.value,
+            minOrderAmount: settings.minOrderAmount,
         };
     } catch (e) {
         console.warn("[loyalty] getLoyaltyOffer:", e?.message ?? e);
@@ -151,7 +186,7 @@ export default function createLoyaltyRouter() {
     });
 
     // PUT /api/loyalty/settings
-    // body: { enabled, ordersBefore, type: 'fixed'|'percent', value }
+    // body: { enabled, ordersBefore, type: 'fixed'|'percent', value, minOrderAmount? }
     router.put("/settings", async (req, res) => {
         try {
             const ctx = await resolveCompanyContext(req, res);
@@ -169,6 +204,17 @@ export default function createLoyaltyRouter() {
             if (!parsed.ok) return res.status(400).json({ ok: false, error: parsed.error });
             const s = parsed.value;
 
+            // Минимальная сумма заказа: колонка создаётся отдельной миграцией.
+            const hasMin = await loyaltyMinColumnReady();
+            if (!hasMin && s.minOrderAmount > 0) {
+                return res.status(409).json({
+                    ok: false,
+                    error: "Не выполнена SQL-миграция loyalty_min_order.sql — минимальную сумму заказа сохранить нельзя",
+                });
+            }
+            // null — поле не передано: сохранённое значение не трогаем
+            const withMin = hasMin && s.minOrderAmount !== null;
+
             // active_since выставляется при первом включении и при повторном
             // включении после паузы: счёт заказов идёт с этого момента.
             // ВАЖНО: в ON DUPLICATE KEY UPDATE присваивания выполняются слева
@@ -176,16 +222,19 @@ export default function createLoyaltyRouter() {
             // enabled=0 увидело бы уже новое значение.
             await pool.query(
                 `INSERT INTO loyalty_settings
-                    (company_id, enabled, orders_before, discount_type, discount_value, active_since)
-                 VALUES (?, ?, ?, ?, ?, IF(? = 1, NOW(), NULL))
+                    (company_id, enabled, orders_before, discount_type, discount_value, active_since${withMin ? ", min_order_amount" : ""})
+                 VALUES (?, ?, ?, ?, ?, IF(? = 1, NOW(), NULL)${withMin ? ", ?" : ""})
                  ON DUPLICATE KEY UPDATE
                     orders_before  = VALUES(orders_before),
                     discount_type  = VALUES(discount_type),
-                    discount_value = VALUES(discount_value),
+                    discount_value = VALUES(discount_value),${withMin ? "\n                    min_order_amount = VALUES(min_order_amount)," : ""}
                     active_since   = IF(VALUES(enabled) = 1 AND (enabled = 0 OR active_since IS NULL),
                                         NOW(), active_since),
                     enabled        = VALUES(enabled)`,
-                [companyId, s.enabled ? 1 : 0, s.ordersBefore, s.type, s.value, s.enabled ? 1 : 0]
+                [
+                    companyId, s.enabled ? 1 : 0, s.ordersBefore, s.type, s.value, s.enabled ? 1 : 0,
+                    ...(withMin ? [s.minOrderAmount] : []),
+                ]
             );
 
             const settings = await getLoyaltySettings(companyId);
@@ -213,6 +262,7 @@ export default function createLoyaltyRouter() {
             }
 
             const LIMIT = 500;
+            const minClause = minOrderSqlClause(settings.minOrderAmount, "o");
             const [rows] = await pool.query(
                 `SELECT o.customer_phone AS phone,
                         (SELECT o2.customer_name
@@ -239,11 +289,11 @@ export default function createLoyaltyRouter() {
                     AND o.created_at >= (
                           SELECT COALESCE(active_since, '1970-01-01 00:00:00')
                             FROM loyalty_settings WHERE company_id = ?)
-                    AND o.order_id > COALESCE(l.last_loy, 0)
+                    AND o.order_id > COALESCE(l.last_loy, 0)${minClause.sql}
                   GROUP BY o.customer_phone
                   ORDER BY cnt DESC, last_order_at DESC
                   LIMIT ${LIMIT + 1}`,
-                [companyId, companyId, companyId, companyId]
+                [companyId, companyId, companyId, companyId, ...minClause.params]
             );
 
             const truncated = rows.length > LIMIT;
@@ -276,6 +326,7 @@ export default function createLoyaltyRouter() {
                 ordersBefore: settings.ordersBefore,
                 type: settings.type,
                 value: settings.value,
+                minOrderAmount: settings.minOrderAmount,
                 truncated,
                 items,
                 summary,

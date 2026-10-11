@@ -7,6 +7,7 @@
 
 export const LOYALTY_MAX_ORDERS_BEFORE = 100;
 export const LOYALTY_MAX_FIXED_EUR = 1000;
+export const LOYALTY_MAX_MIN_ORDER_EUR = 1000;
 
 /** Приводит настройки из запроса к безопасному виду. Возвращает { ok, value|error }. */
 export function sanitizeLoyaltySettings(input) {
@@ -32,7 +33,20 @@ export function sanitizeLoyaltySettings(input) {
         return { ok: false, error: `Сумма скидки не более ${LOYALTY_MAX_FIXED_EUR} €` };
     }
 
-    return { ok: true, value: { enabled, ordersBefore, type, value } };
+    // Минимальная сумма заказа (итог с доставкой), с которой заказ идёт в счёт.
+    // 0 — учитываются все заказы. Если поле не передано вовсе (старый клиент) —
+    // null: сервер оставляет сохранённое значение, а не сбрасывает в 0.
+    let minOrderAmount = null;
+    if (b.minOrderAmount !== undefined) {
+        const rawMin = typeof b.minOrderAmount === "string" ? b.minOrderAmount.trim().replace(",", ".") : b.minOrderAmount;
+        const m = rawMin === "" || rawMin === null ? 0 : Number(rawMin);
+        if (!Number.isFinite(m) || m < 0 || m > LOYALTY_MAX_MIN_ORDER_EUR) {
+            return { ok: false, error: `Минимальная сумма заказа: от 0 до ${LOYALTY_MAX_MIN_ORDER_EUR} €` };
+        }
+        minOrderAmount = Math.round(m * 100) / 100;
+    }
+
+    return { ok: true, value: { enabled, ordersBefore, type, value, minOrderAmount } };
 }
 
 /**
@@ -100,4 +114,17 @@ export function pickOrderDiscount(personalCents, manualCents, loyaltyCents) {
         orderDiscountCents: Math.max(other, loyalty),
         loyaltyWon: loyalty > other,
     };
+}
+
+/**
+ * Условие «заказ идёт в счёт по сумме» для SQL.
+ * Сравнивается итоговая сумма заказа (amount_total: с доставкой, после скидок).
+ * При пороге 0 условие НЕ добавляется вовсе — выборка остаётся ровно такой же,
+ * как до появления порога (в том числе для заказов с пустой суммой).
+ * Возвращает { sql, params }; sql дописывается в конец WHERE.
+ */
+export function minOrderSqlClause(minOrderAmount, alias = "o") {
+    const m = Number(minOrderAmount);
+    if (!Number.isFinite(m) || m <= 0) return { sql: "", params: [] };
+    return { sql: ` AND ${alias}.amount_total >= ?`, params: [Math.round(m * 100) / 100] };
 }

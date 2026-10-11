@@ -6,6 +6,7 @@ import {
     loyaltyDiscountCents,
     pickOrderDiscount,
     classifyProgress,
+    minOrderSqlClause,
 } from "../loyaltyLogic.js";
 
 test("evaluateProgress: при N=10 скидка на 11-м заказе", () => {
@@ -63,7 +64,8 @@ test("pickOrderDiscount: без других скидок побеждает л�
 test("sanitizeLoyaltySettings: валидные значения", () => {
     const r = sanitizeLoyaltySettings({ enabled: true, ordersBefore: "10", type: "fixed", value: "5,5" });
     assert.equal(r.ok, true);
-    assert.deepEqual(r.value, { enabled: true, ordersBefore: 10, type: "fixed", value: 5.5 });
+    // minOrderAmount не передан (старый клиент) → null: сохранённое значение не меняется
+    assert.deepEqual(r.value, { enabled: true, ordersBefore: 10, type: "fixed", value: 5.5, minOrderAmount: null });
 });
 
 test("sanitizeLoyaltySettings: границы", () => {
@@ -109,4 +111,39 @@ test("classifyProgress: мусор на входе не ломает", () => {
     assert.equal(classifyProgress(undefined, undefined).ordersBefore, 1);
     assert.equal(classifyProgress("abc", 5).ordersCount, 0);
     assert.equal(classifyProgress(-3, 5).remaining, 5);
+});
+
+const base = { enabled: true, ordersBefore: 10, type: "fixed", value: 5 };
+
+test("sanitizeLoyaltySettings: minOrderAmount — число, строка с запятой, пусто = 0", () => {
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: 30 }).value.minOrderAmount, 30);
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: "30,5" }).value.minOrderAmount, 30.5);
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: "" }).value.minOrderAmount, 0);
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: null }).value.minOrderAmount, 0);
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: 0 }).value.minOrderAmount, 0);
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: 12.345 }).value.minOrderAmount, 12.35);
+});
+
+test("sanitizeLoyaltySettings: minOrderAmount не передан → null (не менять)", () => {
+    assert.equal(sanitizeLoyaltySettings(base).value.minOrderAmount, null);
+});
+
+test("sanitizeLoyaltySettings: minOrderAmount — границы и мусор", () => {
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: 1000 }).ok, true);
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: 1000.01 }).ok, false);
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: -1 }).ok, false);
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: "abc" }).ok, false);
+    assert.equal(sanitizeLoyaltySettings({ ...base, minOrderAmount: NaN }).ok, false);
+});
+
+test("minOrderSqlClause: порог 0/пусто/мусор → условия нет (выборка как раньше)", () => {
+    for (const v of [0, "0", null, undefined, "", -5, "abc", NaN]) {
+        assert.deepEqual(minOrderSqlClause(v), { sql: "", params: [] });
+    }
+});
+
+test("minOrderSqlClause: порог > 0 → amount_total >= ?, алиас настраивается", () => {
+    assert.deepEqual(minOrderSqlClause(30), { sql: " AND o.amount_total >= ?", params: [30] });
+    assert.deepEqual(minOrderSqlClause("30,5".replace(",", ".")), { sql: " AND o.amount_total >= ?", params: [30.5] });
+    assert.deepEqual(minOrderSqlClause(10, "x"), { sql: " AND x.amount_total >= ?", params: [10] });
 });
