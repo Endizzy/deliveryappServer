@@ -32,6 +32,7 @@ import deliveryZonesRouter from "./deliveryZones.js";
 import createCustomersRouter from "./customers.js";
 import createAnalyticsRouter from "./analytics.js";
 import createLoyaltyRouter from "./loyalty.js";
+import createCustomerNotesRouter from "./customerNotes.js";
 import { getInvoiceSettings, saveInvoiceSettings } from "./invoiceSettings.js";
 import {
     savePushToken,
@@ -331,6 +332,9 @@ app.use("/api/analytics", authMiddleware, createAnalyticsRouter());
 
 // ─── Программа лояльности (скидка на N+1-й заказ клиента) ────────────────────
 app.use("/api/loyalty", authMiddleware, createLoyaltyRouter());
+
+// ─── Заметки администраторов о клиентах (owner/admin, не в накладную) ───────
+app.use("/api/customer-notes", authMiddleware, createCustomerNotesRouter());
 
 // ─── Invoice settings (реквизиты накладной, per-company) ─────────────────────
 app.get("/api/invoice-settings", authMiddleware, getInvoiceSettings);
