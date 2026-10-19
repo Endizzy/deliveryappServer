@@ -1,4 +1,5 @@
 import pool from "./db.js";
+import { resolveCompanyContext } from "./currentOrder.js";
 
 // Нормализация телефона к виду +371XXXXXXXX
 function normalizePhone(phone) {
@@ -24,6 +25,12 @@ export async function getCustomerAddressByPhone(req, res) {
       });
     }
 
+    // Только данные текущей компании: один и тот же номер может быть клиентом
+    // в разных ресторанах, адреса и имя другой компании показывать нельзя.
+    const ctx = await resolveCompanyContext(req, res);
+    if (!ctx) return;
+    const { companyId } = ctx;
+
     const sql = `
       SELECT
         customer_name,
@@ -38,7 +45,8 @@ export async function getCustomerAddressByPhone(req, res) {
         created_at,
         order_id
       FROM current_orders
-      WHERE customer_phone = ?
+      WHERE company_id = ?
+        AND customer_phone = ?
         AND (
           COALESCE(address_street, '') <> '' OR
           COALESCE(address_house, '') <> '' OR
@@ -51,7 +59,7 @@ export async function getCustomerAddressByPhone(req, res) {
       LIMIT 1
     `;
 
-    const [rows] = await pool.execute(sql, [phone]);
+    const [rows] = await pool.execute(sql, [companyId, phone]);
 
     if (!rows.length) {
       return res.json({
