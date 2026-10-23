@@ -43,8 +43,17 @@ import {
 import {
     geoapifyGeocodeByText,
     geoapifyReverseGeocode,
+    geoapifyAutocomplete,
     buildAddressText,
 } from "./services/geoapify/geoapify.js";
+import {
+    SUGGEST_LIMIT,
+    normalizeSuggestText,
+    isSuggestTextValid,
+    normalizeAutocompleteResults,
+    createSuggestCache,
+    createRateLimiter,
+} from "./services/geoapify/suggestLogic.js";
 import { etaOnCourierLocation } from "./services/eta/etaService.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -300,6 +309,40 @@ app.post("/api/geocode", authMiddleware, async (req, res) => {
         });
     } catch (e) {
         console.error("[geocode] error:", e?.message ?? e);
+        res.status(500).json({ ok: false, error: "server error" });
+    }
+});
+
+// ─── Подсказки адреса при вводе (Geoapify Autocomplete) ──────────────────────
+// Экономия кредитов: минимум 3 символа, кэш на 24 ч, лимит запросов на пользователя.
+// Ключ Geoapify остаётся на сервере.
+const suggestCache = createSuggestCache();
+const suggestLimiter = createRateLimiter();
+app.post("/api/geocode-suggest", authMiddleware, async (req, res) => {
+    try {
+        const text = normalizeSuggestText(req.body?.text);
+        if (!isSuggestTextValid(text)) {
+            return res.json({ ok: true, items: [] });
+        }
+        const cacheKey = text.toLowerCase();
+        const cached = suggestCache.get(cacheKey);
+        if (cached) {
+            return res.json({ ok: true, items: cached, cached: true });
+        }
+        const limitKey = `${req.user?.companyId ?? "c"}:${req.user?.userId ?? req.ip}`;
+        if (!suggestLimiter.allow(limitKey)) {
+            return res.status(429).json({ ok: false, error: "too many requests" });
+        }
+        const r = await geoapifyAutocomplete(text, { limit: SUGGEST_LIMIT });
+        if (!r.ok) {
+            console.error("[geocode-suggest]", r.error);
+            return res.status(502).json({ ok: false, error: "geocoder unavailable" });
+        }
+        const items = normalizeAutocompleteResults(r.data, SUGGEST_LIMIT);
+        suggestCache.set(cacheKey, items);
+        res.json({ ok: true, items });
+    } catch (e) {
+        console.error("[geocode-suggest] error:", e?.message ?? e);
         res.status(500).json({ ok: false, error: "server error" });
     }
 });

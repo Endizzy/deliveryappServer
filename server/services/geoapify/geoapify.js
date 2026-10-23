@@ -118,3 +118,30 @@ export async function geoapifyReverseGeocode(lat, lng) {
     raw: item,
   };
 }
+
+// Подсказки адреса при вводе: Geoapify Autocomplete (1 кредит за запрос).
+// Вся Латвия, но с приоритетом Риги (bias по близости к центру Риги).
+export async function geoapifyAutocomplete(text, { limit = 5 } = {}) {
+  const apiKey = process.env.GEOAPIFY_KEY;
+  if (!apiKey) return { ok: false, error: "GEOAPIFY_KEY missing" };
+
+  const url =
+    "https://api.geoapify.com/v1/geocode/autocomplete" +
+    `?text=${encodeURIComponent(text)}` +
+    `&filter=countrycode:lv` +
+    `&bias=proximity:24.1052,56.9496` +
+    `&lang=lv` +
+    `&format=json&limit=${Number(limit) || 5}` +
+    `&apiKey=${encodeURIComponent(apiKey)}`;
+
+  const res = await fetch(url, {
+    headers: { "User-Agent": "delivery-admin/1.0" },
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    return { ok: false, status: res.status, error: `Geoapify ${res.status}: ${body.slice(0, 200)}` };
+  }
+
+  return { ok: true, data: await res.json() };
+}
