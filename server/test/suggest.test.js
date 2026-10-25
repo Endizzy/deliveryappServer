@@ -4,6 +4,7 @@ import {
   normalizeSuggestText,
   isSuggestTextValid,
   normalizeAutocompleteResults,
+  buildSecondaryLine,
   createSuggestCache,
   createRateLimiter,
 } from "../services/geoapify/suggestLogic.js";
@@ -16,24 +17,32 @@ test("текст: пробелы схлопываются, короткий не
   assert.equal(normalizeSuggestText("x".repeat(500)).length, 120);
 });
 
-test("результаты: нормализация, дубли и записи без улицы/координат отбрасываются", () => {
+test("результаты: нормализация, дубли с разными индексами и записи без улицы/координат отбрасываются", () => {
   const data = {
     results: [
       { street: "Brīvības iela", housenumber: "40", city: "Rīga", suburb: "Centrs", postcode: "LV-1050", lat: 56.95, lon: 24.11, formatted: "Brīvības iela 40, Centra rajons, Rīga, LV-1050, Latvija" },
-      { street: "Brīvības iela", housenumber: "40", city: "Rīga", lat: 56.95, lon: 24.11, formatted: "Brīvības iela 40, Centra rajons, Rīga, LV-1050, Latvija" },
+      { street: "Brīvības iela", housenumber: "40", city: "Rīga", postcode: "LV-1011", lat: 56.95, lon: 24.11, formatted: "Brīvības iela 40, Centra rajons, Rīga, LV-1011, Latvija" },
       { street: "", city: "Rīga", lat: 56.9, lon: 24.1, formatted: "Rīga" },
       { street: "Brīvības iela", city: "Rīga", lat: "abc", lon: 24.1, formatted: "bad" },
-      { street: "Brīvības iela", city: "Rīga", lat: 56.96, lon: 24.12, formatted: "Brīvības iela, Rīga" },
+      { street: "Brīvības iela", city: "Rīga", lat: 56.96, lon: 24.12, formatted: "Brīvības iela, Vecmīlgrāvis, Rīga, LV-1005, Latvija" },
     ],
   };
   const items = normalizeAutocompleteResults(data);
   assert.equal(items.length, 2);
-  assert.equal(items[0].exact, true);
+  assert.equal(items[0].main, "Brīvības iela 40");
+  assert.equal(items[0].secondary, "Centra rajons, Rīga");
   assert.equal(items[0].house, "40");
-  assert.equal(items[1].exact, false);
+  assert.equal(items[1].main, "Brīvības iela");
+  assert.equal(items[1].secondary, "Vecmīlgrāvis, Rīga");
   assert.equal(items[1].house, "");
   assert.deepEqual(normalizeAutocompleteResults(null), []);
   assert.deepEqual(normalizeAutocompleteResults({}), []);
+});
+
+test("вторая строка: без индекса и страны, запасной вариант из полей", () => {
+  assert.equal(buildSecondaryLine({ street: "Skudru iela", formatted: "Skudru iela 5, Mārupe, Mārupes novads, LV-2167, Latvia" }), "Mārupe, Mārupes novads");
+  assert.equal(buildSecondaryLine({ street: "X iela", formatted: "X iela 1", city: "Rīga", suburb: "Imanta" }), "Imanta, Rīga");
+  assert.equal(buildSecondaryLine({ street: "X iela", formatted: "" }), "");
 });
 
 test("результаты: ограничение по limit", () => {
