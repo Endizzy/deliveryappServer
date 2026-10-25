@@ -262,7 +262,8 @@ export default function createCustomersRouter() {
 
             const [rows] = await pool.query(
                 `SELECT order_id, address_street, address_house, address_building,
-                        address_apartment, address_floor, address_code, created_at
+                        address_apartment, address_floor, address_code, created_at,
+                        address_lat, address_lng
                    FROM current_orders
                   WHERE company_id=? AND customer_phone=?
                     AND COALESCE(TRIM(address_street), '') <> ''
@@ -286,12 +287,27 @@ export default function createCustomersRouter() {
                 const key = [a.street, a.house, a.building, a.apart]
                     .map((x) => x.toLowerCase())
                     .join("|");
+                // Сохранённая точка этого адреса (из прежнего заказа): форма подставит её без запроса в геокодер
+                const lat = r.address_lat != null ? Number(r.address_lat) : NaN;
+                const lng = r.address_lng != null ? Number(r.address_lng) : NaN;
+                const hasPoint =
+                    Number.isFinite(lat) && Number.isFinite(lng) && !(lat === 0 && lng === 0);
                 const found = byKey.get(key);
                 if (found) {
                     found.count += 1;
+                    if (found.lat == null && hasPoint) {
+                        found.lat = lat;
+                        found.lng = lng;
+                    }
                 } else {
-                    // Строки идут от новых к старым: этаж и код берём из самого свежего заказа
-                    byKey.set(key, { ...a, count: 1, lastAt: r.created_at });
+                    // Строки идут от новых к старым: этаж, код и точку берём из самого свежего заказа
+                    byKey.set(key, {
+                        ...a,
+                        count: 1,
+                        lastAt: r.created_at,
+                        lat: hasPoint ? lat : null,
+                        lng: hasPoint ? lng : null,
+                    });
                 }
             }
 
