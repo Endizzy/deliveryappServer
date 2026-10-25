@@ -299,7 +299,10 @@ app.post("/api/geocode", authMiddleware, async (req, res) => {
         }
         const geo = await geoapifyGeocodeByText(text);
         if (!geo.ok) {
-            return res.status(502).json({ ok: false, error: geo.error });
+            // unavailable: сам сервис геокодинга недоступен (лимит/ключ/сбой) — клиент разрешит создать заказ без карты.
+            // «Адрес не найден» — не сбой сервиса.
+            const unavailable = !/^(No geocode results|Invalid coordinates)/.test(String(geo.error || ""));
+            return res.status(502).json({ ok: false, error: geo.error, unavailable });
         }
         res.json({
             ok: true,
@@ -309,7 +312,7 @@ app.post("/api/geocode", authMiddleware, async (req, res) => {
         });
     } catch (e) {
         console.error("[geocode] error:", e?.message ?? e);
-        res.status(500).json({ ok: false, error: "server error" });
+        res.status(500).json({ ok: false, error: "server error", unavailable: true });
     }
 });
 
@@ -331,12 +334,12 @@ app.post("/api/geocode-suggest", authMiddleware, async (req, res) => {
         }
         const limitKey = `${req.user?.companyId ?? "c"}:${req.user?.userId ?? req.ip}`;
         if (!suggestLimiter.allow(limitKey)) {
-            return res.status(429).json({ ok: false, error: "too many requests" });
+            return res.status(429).json({ ok: false, error: "too many requests", unavailable: false });
         }
         const r = await geoapifyAutocomplete(text, { limit: SUGGEST_LIMIT });
         if (!r.ok) {
             console.error("[geocode-suggest]", r.error);
-            return res.status(502).json({ ok: false, error: "geocoder unavailable" });
+            return res.status(502).json({ ok: false, error: "geocoder unavailable", unavailable: true });
         }
         const items = normalizeAutocompleteResults(r.data, SUGGEST_LIMIT);
         suggestCache.set(cacheKey, items);
