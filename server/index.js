@@ -34,6 +34,7 @@ import createAnalyticsRouter from "./analytics.js";
 import createLoyaltyRouter from "./loyalty.js";
 import createCustomerNotesRouter from "./customerNotes.js";
 import createDashboardRouter from "./dashboard.js";
+import createOrderAuditRouter from "./orderAuditRouter.js";
 import { getInvoiceSettings, saveInvoiceSettings } from "./invoiceSettings.js";
 import {
     savePushToken,
@@ -383,6 +384,9 @@ app.use("/api/loyalty", authMiddleware, createLoyaltyRouter());
 // ─── Заметки администраторов о клиентах (owner/admin, не в накладную) ───────
 app.use("/api/customer-notes", authMiddleware, createCustomerNotesRouter());
 app.use("/api/dashboard", authMiddleware, createDashboardRouter());
+
+// ─── Журнал изменений заказов (только owner, только чтение) ─────────────────
+app.use("/api/order-audit", authMiddleware, createOrderAuditRouter());
 
 // ─── Invoice settings (реквизиты накладной, per-company) ─────────────────────
 app.get("/api/invoice-settings", authMiddleware, getInvoiceSettings);

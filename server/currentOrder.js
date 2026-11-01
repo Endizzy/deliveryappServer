@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { getCustomerDiscount } from "./customers.js";
 import { getLoyaltyOffer, loyaltyColumnsReady } from "./loyalty.js";
 import { loyaltyDiscountCents, pickOrderDiscount } from "./loyaltyLogic.js";
+import { auditSnapshot, auditRecord } from "./orderAudit.js";
 
 /** --- helpers --- */
 export async function resolveCompanyContext(req, res) {
@@ -880,6 +881,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     order: item, // ✅ уже с addressLat/addressLng
                 });
             }
+
+            // Журнал изменений: запись после ответа, ошибки только в лог
+            void auditRecord({ req, companyId, orderId: order_id, before: null, after: rows[0], source: "web" });
         } catch (e) {
             // Общее «Ошибка сервера» ничего не объясняет: возвращаем сообщение
             // MySQL, иначе причину видно только в логах контейнера.
@@ -963,6 +967,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     `[order ${id}] неизвестный способ оплаты ${JSON.stringify(b.payment)}, оставлен прежний: ${payment_method}`
                 );
             }
+
+            // Журнал изменений: состояние заказа до правки (не бросает ошибок)
+            const auditBefore = await auditSnapshot(companyId, id);
 
             await ensureCompletedAtColumn();
             await pool.query(
@@ -1063,6 +1070,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     prevCourierId: prevCourierId ?? null,
                 });
             }
+
+            // Журнал изменений: запись после ответа, ошибки только в лог
+            void auditRecord({ req, companyId, orderId: id, before: auditBefore, after: rows[0], source: "web" });
         } catch (e) {
             const detail = e?.sqlMessage || e?.message || String(e);
             console.error("update current order:", e?.code || "", detail);
@@ -1099,6 +1109,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 });
             }
 
+            // Журнал изменений: состояние заказа до правки (не бросает ошибок)
+            const auditBefore = await auditSnapshot(companyId, id);
+
             await ensureCompletedAtColumn();
             await pool.query(
                 `UPDATE current_orders
@@ -1134,6 +1147,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             if (typeof broadcastToAdmins === "function") {
                 broadcastToAdmins({ type: "order_updated", companyId, order: item });
             }
+
+            // Журнал изменений: запись после ответа, ошибки только в лог
+            void auditRecord({ req, companyId, orderId: id, before: auditBefore, after: rows[0], source: "web" });
         } catch (e) {
             const detail = e?.sqlMessage || e?.message || String(e);
             console.error("update order status:", e?.code || "", detail);
@@ -1194,7 +1210,10 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const prevCourierId = prev.courier_unit_id ?? null;
             const changed = String(prevCourierId ?? "") !== String(courierId ?? "");
 
+            // Журнал изменений: состояние заказа до правки (не бросает ошибок)
+            let auditBefore = null;
             if (changed) {
+                auditBefore = await auditSnapshot(companyId, id);
                 await pool.query(
                     `UPDATE current_orders
                         SET courier_unit_id=?, updated_at=NOW()
@@ -1237,6 +1256,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                     prevCourierId: prevCourierId ?? null,
                 });
             }
+
+            // Журнал изменений: запись после ответа, ошибки только в лог
+            if (changed) void auditRecord({ req, companyId, orderId: id, before: auditBefore, after: rows[0], source: "web" });
         } catch (e) {
             const detail = e?.sqlMessage || e?.message || String(e);
             console.error("update order courier:", e?.code || "", detail);
@@ -1282,6 +1304,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             const prevPickupId = prev.pickup_unit_id ?? null;
             const changed = String(prevPickupId ?? "") !== String(pickupId);
 
+            // Журнал изменений: состояние заказа до правки (не бросает ошибок)
+            let auditBefore = null;
             if (changed) {
                 // Назначать можно только активный ресторан этой же компании
                 const [[p]] = await pool.query(
@@ -1290,6 +1314,7 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
                 );
                 if (!p) return res.status(400).json({ ok: false, error: "Ресторан не найден" });
 
+                auditBefore = await auditSnapshot(companyId, id);
                 await pool.query(
                     `UPDATE current_orders
                         SET pickup_unit_id=?, updated_at=NOW()
@@ -1322,6 +1347,9 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
             if (changed && typeof broadcastToAdmins === "function") {
                 broadcastToAdmins({ type: "order_updated", companyId, order: item });
             }
+
+            // Журнал изменений: запись после ответа, ошибки только в лог
+            if (changed) void auditRecord({ req, companyId, orderId: id, before: auditBefore, after: rows[0], source: "web" });
         } catch (e) {
             const detail = e?.sqlMessage || e?.message || String(e);
             console.error("update order pickup:", e?.code || "", detail);
