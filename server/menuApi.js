@@ -1,5 +1,6 @@
 import { Router } from "express";
 import pool from "./db.js";
+import { noDiscountColumnReady, noDiscountSelect } from "./menuNoDiscount.js";
 
 const router = Router();
 
@@ -46,6 +47,7 @@ function rowToItem(r) {
         category: r.item_category,
         price: Number(r.item_price),
         discount: Number(r.item_discount_percent),
+        noDiscount: !!r.no_discount,
         available: !!r.is_active,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
@@ -83,9 +85,10 @@ router.get("/", async (req, res) => {
             params.push(v ? 1 : 0);
         }
 
+        const ndSel = await noDiscountSelect();
         const sql = `
       SELECT item_id, item_name, item_category, item_price,
-             item_discount_percent, is_active, created_at, updated_at
+             item_discount_percent, ${ndSel}, is_active, created_at, updated_at
       FROM menu
       WHERE ${where.join(" AND ")}
       ORDER BY item_name ASC
@@ -108,6 +111,7 @@ router.post("/", async (req, res) => {
         const companyId = await requireCompanyId(userId);
 
         const { name, category, price, discount = 0, available = true } = req.body || {};
+        const noDiscountFlag = [true, 1, "1"].includes(req.body?.noDiscount);
         if (!name || typeof price === "undefined" || price === "")
             return res.status(400).json({ error: "name и price обязательны" });
 
@@ -116,8 +120,13 @@ router.post("/", async (req, res) => {
         const pd = parsePercent(discount);
         if (!pd.ok) return res.status(400).json({ error: pd.error });
 
+        // «Скидки запрещены» без колонки в БД молча не сохранять нельзя
+        if (noDiscountFlag && !(await noDiscountColumnReady())) {
+            return res.status(400).json({ error: "Флаг «Скидки запрещены» ещё не включён: выполните SQL menu_no_discount.sql" });
+        }
+
         const p = centsToMoneyString(pm.cents);
-        const d = pd.value;
+        const d = noDiscountFlag ? 0 : pd.value;
 
         const [result] = await pool.query(
             `INSERT INTO menu
@@ -126,8 +135,16 @@ router.post("/", async (req, res) => {
             [companyId, name, category || null, p, d, available ? 1 : 0]
         );
 
+        if (noDiscountFlag) {
+            await pool.query(
+                "UPDATE menu SET no_discount = 1 WHERE item_id = ? AND company_id = ? LIMIT 1",
+                [result.insertId, companyId]
+            );
+        }
+
+        const ndSel = await noDiscountSelect();
         const [rows] = await pool.query(
-            `SELECT item_id, item_name, item_category, item_price, item_discount_percent, is_active, created_at, updated_at
+            `SELECT item_id, item_name, item_category, item_price, item_discount_percent, ${ndSel}, is_active, created_at, updated_at
          FROM menu WHERE item_id = ? AND company_id = ? LIMIT 1`,
             [result.insertId, companyId]
         );
@@ -377,6 +394,8 @@ router.put("/:id", async (req, res) => {
         if (!itemId) return res.status(400).json({ error: "Некорректный id" });
 
         const { name, category, price, discount, available } = req.body || {};
+        const noDiscountSent = typeof req.body?.noDiscount !== "undefined";
+        const noDiscountFlag = [true, 1, "1"].includes(req.body?.noDiscount);
 
         const sets = [];
         const params = [];
@@ -388,10 +407,21 @@ router.put("/:id", async (req, res) => {
             if (!pm.ok) return res.status(400).json({ error: pm.error });
             sets.push("item_price = ?"); params.push(centsToMoneyString(pm.cents));
         }
-        if (typeof discount !== "undefined") {
+        if (typeof discount !== "undefined" && !noDiscountFlag) {
             const pd = parsePercent(discount);
             if (!pd.ok) return res.status(400).json({ error: pd.error });
             sets.push("item_discount_percent = ?"); params.push(pd.value);
+        }
+        // Блюдо со «Скидки запрещены» всегда по полной цене: собственная скидка обнуляется.
+        // Если колонки в БД ещё нет, выключенный флаг игнорируем (форма шлёт его всегда),
+        // а включённый — отклоняем, чтобы не сохранить то, чего на деле нет.
+        if (noDiscountSent) {
+            if (await noDiscountColumnReady()) {
+                sets.push("no_discount = ?"); params.push(noDiscountFlag ? 1 : 0);
+                if (noDiscountFlag) { sets.push("item_discount_percent = ?"); params.push(0); }
+            } else if (noDiscountFlag) {
+                return res.status(400).json({ error: "Флаг «Скидки запрещены» ещё не включён: выполните SQL menu_no_discount.sql" });
+            }
         }
         if (typeof available !== "undefined") { sets.push("is_active = ?"); params.push(available ? 1 : 0); }
 
@@ -407,8 +437,9 @@ router.put("/:id", async (req, res) => {
         const [upd] = await pool.query(sql, params);
         if (upd.affectedRows === 0) return res.status(404).json({ error: "Не найдено" });
 
+        const ndSel = await noDiscountSelect();
         const [rows] = await pool.query(
-            `SELECT item_id, item_name, item_category, item_price, item_discount_percent, is_active, created_at, updated_at
+            `SELECT item_id, item_name, item_category, item_price, item_discount_percent, ${ndSel}, is_active, created_at, updated_at
          FROM menu WHERE item_id = ? AND company_id = ? LIMIT 1`,
             [itemId, companyId]
         );

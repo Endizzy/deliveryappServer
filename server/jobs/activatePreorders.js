@@ -1,5 +1,6 @@
 import pool from "../db.js";
 import { rowToPanelDto, PREORDER_LEAD_HOURS } from "../currentOrder.js";
+import { auditRecord } from "../orderAudit.js";
 
 /**
  * activatePreorders(broadcastToAdmins)
@@ -144,6 +145,17 @@ export async function activatePreorders(broadcastToAdmins) {
                             wsErr?.message ?? wsErr
                         );
                     }
+
+                    // Журнал изменений заказов: предзаказ → активный (источник «система»).
+                    // «До» — та же строка, где был тип preorder. Ошибки журнала глотаются.
+                    void auditRecord({
+                        req: null,
+                        companyId: row.company_id,
+                        orderId: row.order_id,
+                        before: { ...freshRows[0], order_type: 'preorder' },
+                        after: freshRows[0],
+                        source: 'system',
+                    });
                 } else {
                     console.log(`[activatePreorders] Заказ ${row.order_id} не был обновлён (условие не выполнено)`);
                 }

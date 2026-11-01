@@ -6,6 +6,7 @@ import {
   todayUtcRange,
   courierVisibleOrderSql,
 } from "./currentOrder.js";
+import { auditSnapshot, auditRecord } from "./orderAudit.js";
 
 function rowToMobileOrderDto(r) {
   const addr = [
@@ -78,6 +79,13 @@ async function fetchOrderById(companyId, orderId) {
     [companyId, orderId]
   );
   return rows[0] ?? null;
+}
+
+// Журнал изменений заказов: строка заказа после правки в виде, который ждёт журнал
+// (у мобильного запроса имя курьера называется courier_name). Только запись в
+// журнал; ответ курьеру уже отправлен, ошибки журнала на него не влияют.
+function auditAfter(row) {
+  return row ? { ...row, courier_nickname: row.courier_name ?? null } : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -214,6 +222,8 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
         return res.status(409).json({ ok: false, error: "Заказ уже назначен другому курьеру" });
       }
 
+      const auditBefore = await auditSnapshot(companyId, orderId);
+
       await pool.query(
         "UPDATE current_orders SET courier_unit_id=? WHERE company_id=? AND order_id=?",
         [courierId, companyId, orderId]
@@ -230,6 +240,7 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       }
 
       res.json({ ok: true, message: "Заказ успешно принят" });
+      if (updatedRow) void auditRecord({ req, companyId, orderId, before: auditBefore, after: auditAfter(updatedRow), source: "courier_app" });
     } catch (e) {
       console.error("assign order error", e);
       res.status(500).json({ ok: false, error: "Ошибка сервера" });
@@ -260,6 +271,7 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       }
 
       // Снимаем курьера и возвращаем заказ в статус «новый»
+      const auditBefore = await auditSnapshot(companyId, orderId);
       await pool.query(
         "UPDATE current_orders SET courier_unit_id=NULL, status='new', updated_at=NOW() WHERE company_id=? AND order_id=?",
         [companyId, orderId]
@@ -276,6 +288,7 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       }
 
       res.json({ ok: true, message: "Заказ успешно отказан" });
+      if (updatedRow) void auditRecord({ req, companyId, orderId, before: auditBefore, after: auditAfter(updatedRow), source: "courier_app" });
     } catch (e) {
       console.error("release order error", e);
       res.status(500).json({ ok: false, error: "Ошибка сервера" });
@@ -316,6 +329,8 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
         return res.json({ ok: true, alreadyDone: true });
       }
 
+      const auditBefore = await auditSnapshot(companyId, orderId);
+
       await pool.query(
         "UPDATE current_orders SET status='completed', completed_at=UTC_TIMESTAMP(), updated_at=NOW() WHERE company_id=? AND order_id=?",
         [companyId, orderId]
@@ -332,6 +347,7 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       }
 
       res.json({ ok: true, message: "Заказ завершён" });
+      if (updatedRow) void auditRecord({ req, companyId, orderId, before: auditBefore, after: auditAfter(updatedRow), source: "courier_app" });
     } catch (e) {
       console.error("complete order error", e);
       res.status(500).json({ ok: false, error: "Ошибка сервера" });
@@ -367,6 +383,8 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
         return res.status(409).json({ ok: false, error: "Заказ уже закрыт" });
       }
 
+      const auditBefore = await auditSnapshot(companyId, orderId);
+
       await pool.query(
         "UPDATE current_orders SET status='enroute', updated_at=NOW() WHERE company_id=? AND order_id=?",
         [companyId, orderId]
@@ -382,6 +400,7 @@ export default function mobileOrdersRouter({ broadcastToCompany }) {
       }
 
       res.json({ ok: true, message: "Заказ в пути" });
+      if (updatedRow) void auditRecord({ req, companyId, orderId, before: auditBefore, after: auditAfter(updatedRow), source: "courier_app" });
     } catch (e) {
       console.error("enroute order error", e);
       res.status(500).json({ ok: false, error: "Ошибка сервера" });

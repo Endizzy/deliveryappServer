@@ -1,4 +1,5 @@
 import pool from "./db.js";
+import { noDiscountSelect } from "./menuNoDiscount.js";
 
 async function resolveCompanyContext(req, res) {
     const u = req.user || {};
@@ -71,10 +72,12 @@ export async function searchMenuItems(req, res) {
         if (!ctx) return;
         const { companyId } = ctx;
 
+        // «Скидки запрещены»: блюдо всегда по полной цене (discount = 0)
+        const ndSel = await noDiscountSelect();
         const wantAll = String(req.query.all || "") === "1";
         if (wantAll) {
             const [rows] = await pool.query(
-                `SELECT item_id, item_name, item_category, item_price, item_discount_percent
+                `SELECT item_id, item_name, item_category, item_price, item_discount_percent, ${ndSel}
            FROM menu
           WHERE company_id=? AND is_active=1
           ORDER BY item_name ASC`,
@@ -87,7 +90,8 @@ export async function searchMenuItems(req, res) {
                     name: r.item_name,
                     category: r.item_category,
                     price: Number(r.item_price),
-                    discount: Number(r.item_discount_percent) || 0,
+                    discount: r.no_discount ? 0 : Number(r.item_discount_percent) || 0,
+                    noDiscount: !!r.no_discount,
                 })),
             });
         }
@@ -96,7 +100,7 @@ export async function searchMenuItems(req, res) {
         const limit = Math.min(Number(req.query.limit || 8), 50);
 
         let sql = `
-      SELECT item_id, item_name, item_category, item_price, item_discount_percent
+      SELECT item_id, item_name, item_category, item_price, item_discount_percent, ${ndSel}
         FROM menu
        WHERE company_id=? AND is_active=1`;
         const params = [companyId];
@@ -118,7 +122,8 @@ export async function searchMenuItems(req, res) {
                 name: r.item_name,
                 category: r.item_category,
                 price: Number(r.item_price),
-                discount: Number(r.item_discount_percent) || 0,
+                discount: r.no_discount ? 0 : Number(r.item_discount_percent) || 0,
+                noDiscount: !!r.no_discount,
             })),
         });
     } catch (e) {

@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { getCustomerDiscount } from "./customers.js";
 import { getLoyaltyOffer, loyaltyColumnsReady } from "./loyalty.js";
 import { loyaltyDiscountCents, pickOrderDiscount } from "./loyaltyLogic.js";
+import { withNoDiscountFlags } from "./menuNoDiscount.js";
 import { auditSnapshot, auditRecord } from "./orderAudit.js";
 
 /** --- helpers --- */
@@ -50,6 +51,11 @@ function toMySQLDatetime(isoString) {
 // loyalty (необяз.): { type: 'percent'|'fixed', value } — скидка программы
 // лояльности. Участвует в том же выборе «большая из скидок». Флаг loyalty_won
 // в результате говорит, что применилась именно она (только тогда она «сгорает»).
+//
+// Позиция с noDiscount === true (блюдо с флагом «Скидки запрещены») идёт по
+// полной цене: на неё не действуют скидка клиента и разовая скидка. Скидка
+// лояльности действует на неё как на обычную позицию. Флаг проставляет сервер
+// по данным меню (withNoDiscountFlags), а не клиент.
 function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manualPercent = 0, loyalty = null) {
     const toCents = (amount) => {
         const s = typeof amount === "string" ? amount.trim().replace(",", ".") : amount;
@@ -70,7 +76,8 @@ function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manu
 
     const norm = (Array.isArray(items) ? items : []).map((it) => {
         const price = Number(it.price || 0);
-        const discount = Number(it.discount || 0);
+        const noDisc = it.noDiscount === true;
+        const discount = noDisc ? 0 : Number(it.discount || 0);
         const qty = Number(it.quantity || 0);
 
         const priceCents = toCents(price);
@@ -82,11 +89,13 @@ function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manu
             name: it.name ?? "",
             price,
             discount,
+            ...(noDisc ? { noDiscount: true } : {}),
             final_price: Number(formatCents(unitCents)),
             quantity: qty,
             line_total: Number(formatCents(lineCents)),
             _price_cents: priceCents,
             _line_cents: lineCents,
+            _no_disc: noDisc,
         };
     });
 
@@ -96,8 +105,19 @@ function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manu
     // База для ПРОЦЕНТНОЙ скидки клиента — только позиции без скидки в меню.
     // Раньше процент брался со всей суммы, и на акционном товаре скидка
     // складывалась дважды: −20% в меню и сверху −10% персональных.
+    // Позиции «скидки запрещены» в эту базу не входят.
     const percentBaseCents = norm.reduce(
+        (s, r) => (Number(r.discount) > 0 || r._no_disc ? s : s + r._price_cents * r.quantity),
+        0
+    );
+    // Для скидки лояльности такая позиция — обычная (по полной цене).
+    const loyaltyBaseCents = norm.reduce(
         (s, r) => (Number(r.discount) > 0 ? s : s + r._price_cents * r.quantity),
+        0
+    );
+    // Сумма позиций, на которые скидка клиента вообще может действовать.
+    const discountableTotalCents = norm.reduce(
+        (s, r) => (r._no_disc ? s : s + r._line_cents),
         0
     );
 
@@ -109,7 +129,7 @@ function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manu
         if (orderDiscount.type === "fixed") {
             // Фиксированная сумма вычитается из всего заказа: удвоения скидки
             // тут не возникает, поведение оставлено прежним.
-            personalCents = Math.min(toCents(v), itemsTotalCents);
+            personalCents = Math.min(toCents(v), discountableTotalCents);
         } else {
             const pct = Math.min(v, 100);
             personalCents = Math.round((percentBaseCents * pct) / 100);
@@ -124,7 +144,7 @@ function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manu
             : 0;
 
     // Скидка лояльности (программа «N заказов — скидка на следующий»)
-    const loyaltyCents = loyaltyDiscountCents(loyalty, itemsTotalCents, percentBaseCents);
+    const loyaltyCents = loyaltyDiscountCents(loyalty, itemsTotalCents, loyaltyBaseCents);
 
     // Не складываем: клиент получает лучшее из условий
     const { orderDiscountCents, loyaltyWon } = pickOrderDiscount(
@@ -138,7 +158,7 @@ function normalizeItemsAndAmounts(items, deliveryFee, orderDiscount = null, manu
     const totalCents = itemsAfterOrderDiscCents + deliveryFeeCents;
 
     // не сохраняем служебные поля в items_json
-    const itemsClean = norm.map(({ _price_cents, _line_cents, ...rest }) => rest);
+    const itemsClean = norm.map(({ _price_cents, _line_cents, _no_disc, ...rest }) => rest);
 
     return {
         items: itemsClean,
@@ -706,7 +726,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const { items, amount_subtotal, amount_discount, amount_total, delivery_fee, loyalty_won } =
                 normalizeItemsAndAmounts(
-                    b.selectedItems || [], b.deliveryFee, orderDiscount, manualDiscountPercent,
+                    await withNoDiscountFlags(companyId, b.selectedItems || []),
+                    b.deliveryFee, orderDiscount, manualDiscountPercent,
                     loyaltyOffer
                 );
             if (!b.payment)
@@ -938,7 +959,8 @@ export function currentOrdersRouter({ broadcastToAdmins }) {
 
             const { items, amount_subtotal, amount_discount, amount_total, delivery_fee, loyalty_won } =
                 normalizeItemsAndAmounts(
-                    b.selectedItems || [], b.deliveryFee, orderDiscount, manualDiscountPercent,
+                    await withNoDiscountFlags(companyId, b.selectedItems || []),
+                    b.deliveryFee, orderDiscount, manualDiscountPercent,
                     loyaltyForCalc
                 );
 
