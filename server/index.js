@@ -35,6 +35,9 @@ import createLoyaltyRouter from "./loyalty.js";
 import createCustomerNotesRouter from "./customerNotes.js";
 import createDashboardRouter from "./dashboard.js";
 import createOrderAuditRouter from "./orderAuditRouter.js";
+import createSupportTicketsRouter, {
+    createSupportInternalRouter,
+} from "./supportTickets.js";
 import { getInvoiceSettings, saveInvoiceSettings } from "./invoiceSettings.js";
 import {
     savePushToken,
@@ -387,6 +390,10 @@ app.use("/api/dashboard", authMiddleware, createDashboardRouter());
 
 // ─── Журнал изменений заказов (только owner, только чтение) ─────────────────
 app.use("/api/order-audit", authMiddleware, createOrderAuditRouter());
+
+// ─── Тикеты техподдержки (сайт) + внутренний ответ из telegram-bot ───────────
+app.use("/api/support-tickets", authMiddleware, createSupportTicketsRouter());
+app.use("/api/internal/support", createSupportInternalRouter());
 
 // ─── Invoice settings (реквизиты накладной, per-company) ─────────────────────
 app.get("/api/invoice-settings", authMiddleware, getInvoiceSettings);
