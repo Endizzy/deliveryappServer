@@ -259,8 +259,8 @@ app.use(
 // ─── Push notifications (courier devices) ────────────────────────────────────
 app.post("/api/push/register-token", authMiddleware, async (req, res) => {
     try {
-        const { token, platform } = req.body || {};
-        console.log(`[push] register-token hit: unit=${req.user?.userId} company=${req.user?.companyId} platform=${platform} token=${String(token).slice(0, 24)}...`);
+        const { token, platform, sound, channelId } = req.body || {};
+        console.log(`[push] register-token hit: unit=${req.user?.userId} company=${req.user?.companyId} platform=${platform} sound=${sound} channelId=${channelId} token=${String(token).slice(0, 24)}...`);
         if (!token || typeof token !== "string") {
             return res.status(400).json({ ok: false, error: "token required" });
         }
@@ -270,8 +270,8 @@ app.post("/api/push/register-token", authMiddleware, async (req, res) => {
             console.warn(`[push] register-token unauthorized: unit=${unitId} company=${companyId}`);
             return res.status(401).json({ ok: false, error: "unauthorized" });
         }
-        await savePushToken({ unitId, companyId, token, platform });
-        console.log(`[push] token saved for unit=${unitId} company=${companyId}`);
+        await savePushToken({ unitId, companyId, token, platform, sound, channelId });
+        console.log(`[push] token saved for unit=${unitId} company=${companyId} sound=${sound || 'default'} channelId=${channelId || 'orders_default'}`);
         res.json({ ok: true });
     } catch (e) {
         console.error("[push] register-token error:", e);

@@ -1,20 +1,50 @@
 
-
 import pool from "../db.js";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
+let soundColumnsReady = false;
+
+async function ensureSoundColumns() {
+    if (soundColumnsReady) return;
+    try {
+        await pool.query(
+            `ALTER TABLE courier_push_tokens ADD COLUMN sound VARCHAR(64) NULL`
+        );
+    } catch (e) {
+        // duplicate column — ок
+    }
+    try {
+        await pool.query(
+            `ALTER TABLE courier_push_tokens ADD COLUMN channel_id VARCHAR(64) NULL`
+        );
+    } catch (e) {
+        // duplicate column — ок
+    }
+    soundColumnsReady = true;
+}
+
 // ── Сохранить/обновить токен курьера (upsert по token) ──────────────────────
-export async function savePushToken({ unitId, companyId, token, platform }) {
+export async function savePushToken({ unitId, companyId, token, platform, sound, channelId }) {
+    await ensureSoundColumns();
     await pool.query(
-        `INSERT INTO courier_push_tokens (unit_id, company_id, token, platform)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO courier_push_tokens (unit_id, company_id, token, platform, sound, channel_id)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
             unit_id = VALUES(unit_id),
             company_id = VALUES(company_id),
             platform = VALUES(platform),
+            sound = VALUES(sound),
+            channel_id = VALUES(channel_id),
             updated_at = CURRENT_TIMESTAMP`,
-        [unitId, companyId, token, platform || null]
+        [
+            unitId,
+            companyId,
+            token,
+            platform || null,
+            sound || "default",
+            channelId || "orders_default",
+        ]
     );
 }
 
@@ -30,8 +60,9 @@ export async function deletePushTokensByUnit(unitId) {
 }
 
 async function getCompanyCourierTokens(companyId, excludeUnitId, onlyUnitId) {
+    await ensureSoundColumns();
     const params = [companyId];
-    let sql = `SELECT token FROM courier_push_tokens WHERE company_id = ?`;
+    let sql = `SELECT token, sound, channel_id FROM courier_push_tokens WHERE company_id = ?`;
     // Адресная отправка: заказ, назначенный конкретному курьеру, остальным
     // не нужен — они его всё равно не могут взять.
     if (onlyUnitId != null) {
@@ -42,7 +73,11 @@ async function getCompanyCourierTokens(companyId, excludeUnitId, onlyUnitId) {
         params.push(excludeUnitId);
     }
     const [rows] = await pool.query(sql, params);
-    return rows.map((r) => r.token);
+    return rows.map((r) => ({
+        token: r.token,
+        sound: r.sound || "default",
+        channelId: r.channel_id || "orders_default",
+    }));
 }
 
 function isExpoToken(t) {
@@ -76,22 +111,25 @@ export async function sendOrderPush(companyId, order, opts = {}) {
         const assignedTo = order?.courierId ?? order?.courier_unit_id ?? null;
         const onlyUnitId = opts.onlyUnitId ?? assignedTo ?? null;
 
-        const allTokens = await getCompanyCourierTokens(companyId, opts.excludeUnitId, onlyUnitId);
-        const tokens = allTokens.filter(isExpoToken);
+        const allRows = await getCompanyCourierTokens(companyId, opts.excludeUnitId, onlyUnitId);
+        const rows = allRows.filter((r) => isExpoToken(r.token));
         console.log(
             `[push] sendOrderPush company=${companyId} order=${order?.id ?? '?'} ` +
             `${onlyUnitId != null ? `→ курьеру ${onlyUnitId}` : '→ всем курьерам'}: ` +
-            `${allTokens.length} rows, ${tokens.length} valid tokens`
+            `${allRows.length} rows, ${rows.length} valid tokens`
         );
-        if (tokens.length === 0) return;
+        if (rows.length === 0) return;
 
         const { title, body } = buildOrderMessage(order, { assigned: onlyUnitId != null });
 
-        const messages = tokens.map((token) => ({
-            to: token,
-            sound: "default",
+        const messages = rows.map((row) => ({
+            to: row.token,
+            // sound + channelId с устройства курьера (выбор в настройках).
+            // Раньше тут был hardcode "default" — из‑за этого в фоне всегда
+            // играл системный звук, даже если выбран курьерский.
+            sound: row.sound || "default",
             priority: "high",
-            channelId: "orders",
+            channelId: row.channelId || "orders_default",
             title,
             body,
             data: {
