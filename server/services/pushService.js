@@ -43,7 +43,7 @@ export async function savePushToken({ unitId, companyId, token, platform, sound,
             token,
             platform || null,
             sound || "default",
-            channelId || "orders_default",
+            channelId || "ordv3_default",
         ]
     );
 }
@@ -76,7 +76,7 @@ async function getCompanyCourierTokens(companyId, excludeUnitId, onlyUnitId) {
     return rows.map((r) => ({
         token: r.token,
         sound: r.sound || "default",
-        channelId: r.channel_id || "orders_default",
+        channelId: r.channel_id || "ordv3_default",
     }));
 }
 
@@ -122,6 +122,13 @@ export async function sendOrderPush(companyId, order, opts = {}) {
 
         const { title, body } = buildOrderMessage(order, { assigned: onlyUnitId != null });
 
+        // Стабильный id для схлопывания/снятия из шторки на клиенте.
+        // Android в фоне отдаёт push как «foreign» без data.orderId — тогда
+        // приложение ищет уведомление по tag в identifier
+        // (expo-notifications://foreign_notifications?tag=order-123&id=0).
+        const orderId = order?.id ?? order?.order_id ?? null;
+        const orderTag = orderId != null ? `order-${orderId}` : null;
+
         const messages = rows.map((row) => ({
             to: row.token,
             // sound + channelId с устройства курьера (выбор в настройках).
@@ -129,12 +136,16 @@ export async function sendOrderPush(companyId, order, opts = {}) {
             // играл системный звук, даже если выбран курьерский.
             sound: row.sound || "default",
             priority: "high",
-            channelId: row.channelId || "orders_default",
+            channelId: row.channelId || "ordv3_default",
             title,
             body,
+            // Android: заменить уже показанный пуш по тому же заказу
+            ...(orderTag ? { tag: orderTag } : {}),
+            // iOS (+ Android in-transit): схлопнуть дубли по заказу
+            ...(orderTag ? { collapseId: orderTag } : {}),
             data: {
                 type: "order_created",
-                orderId: order?.id ?? order?.order_id ?? null,
+                orderId,
                 companyId,
                 // Подсказки для навигации по тапу: приложение решает, куда вести
                 // курьера, ещё до загрузки списков (важно при холодном старте).

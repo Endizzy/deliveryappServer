@@ -271,7 +271,7 @@ app.post("/api/push/register-token", authMiddleware, async (req, res) => {
             return res.status(401).json({ ok: false, error: "unauthorized" });
         }
         await savePushToken({ unitId, companyId, token, platform, sound, channelId });
-        console.log(`[push] token saved for unit=${unitId} company=${companyId} sound=${sound || 'default'} channelId=${channelId || 'orders_default'}`);
+        console.log(`[push] token saved for unit=${unitId} company=${companyId} sound=${sound || 'default'} channelId=${channelId || 'ordv3_default'}`);
         res.json({ ok: true });
     } catch (e) {
         console.error("[push] register-token error:", e);
